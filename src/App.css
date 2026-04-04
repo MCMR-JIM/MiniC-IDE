@@ -1,0 +1,253 @@
+html,
+body,
+#root {
+  height: 100%;
+}
+
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  font-size: 13px;
+  background: #1e1e1e;
+  color: #cccccc;
+  overflow: hidden;
+  height: 100%;
+  width: 100vw;
+}
+
+#root {
+  width: 100vw;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  overflow-anchor: none;
+  overscroll-behavior: none;
+}
+
+.ide-root {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  width: 100vw;
+  overflow: hidden;
+  background: #1e1e1e;
+}
+
+.ide-body {
+  display: flex;
+  flex: 1;
+  overflow: hidden;
+  overflow-anchor: none;
+  overscroll-behavior: none;
+  min-height: 0;
+}
+
+.ide-sidebar {
+  display: flex;
+  flex-direction: column;
+  background: #252526;
+  overflow: hidden;
+  flex-shrink: 0;
+  position: relative;
+  min-width: 150px;
+  max-width: 500px;
+}
+
+.sidebar-resizer {
+  position: absolute;
+  right: 0;
+  top: 0;
+  bottom: 0;
+  width: 4px;
+  cursor: col-resize;
+  background: transparent;
+  z-index: 10;
+}
+.sidebar-resizer:hover { background: #007acc; }
+
+.ide-main {
+  /* Grid fixes tab row height: flex+min-height:0 on descendants was reserving ~16px while tabs still painted 36px (host y=46 vs 66). */
+  display: grid;
+  grid-template-rows: 36px minmax(0, 1fr);
+  grid-template-columns: minmax(0, 1fr);
+  flex: 1;
+  overflow: hidden;
+  overflow-anchor: none;
+  overscroll-behavior: none;
+  min-width: 0;
+  min-height: 0;
+}
+
+.ide-main-tabstrip {
+  grid-row: 1;
+  grid-column: 1;
+  height: 36px;
+  min-height: 36px;
+  max-height: 36px;
+  box-sizing: border-box;
+  overflow: hidden;
+  display: block;
+  position: relative;
+  z-index: 2;
+}
+
+.ide-main-tabstrip > .tabbar {
+  height: 36px;
+  min-height: 36px;
+  max-height: 36px;
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.ide-editor-area {
+  grid-row: 2;
+  grid-column: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+  overflow-anchor: none;
+  overscroll-behavior: none;
+}
+
+.output-resizer {
+  height: 4px;
+  cursor: row-resize;
+  background: #333;
+  flex-shrink: 0;
+}
+.output-resizer:hover { background: #007acc; }
+
+/* Must match store outputHeight; panel fills this slot (do not fix .output-panel to a larger px height). */
+.ide-output-slot {
+  flex-shrink: 0;
+  min-height: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-track { background: #1e1e1e; }
+::-webkit-scrollbar-thumb { background: #424242; border-radius: 4px; }
+::-webkit-scrollbar-thumb:hover { background: #555; }
+
+* { outline: none; }
+
+button { cursor: pointer; }
+
+input, textarea {
+  background: #3c3c3c;
+  color: #cccccc;
+  border: 1px solid #555;
+  border-radius: 2px;
+  padding: 4px 8px;
+  font-size: 13px;
+  font-family: inherit;
+}
+input:focus, textarea:focus { border-color: #007acc; outline: none; }
+
+.monaco-editor input,
+.monaco-editor textarea,
+.monaco-editor .inputarea {
+  background: transparent !important;
+  border: 0 !important;
+  border-radius: 0 !important;
+  padding: 0 !important;
+  margin: 0 !important;
+  box-shadow: none !important;
+}
+
+.monaco-editor textarea,
+.monaco-editor .inputarea,
+.monaco-editor .ime-input {
+  box-sizing: border-box !important;
+}
+
+/* Keep Monaco caret visible even when global input styles are overridden. */
+.monaco-editor .cursor {
+  background-color: #aeafad !important;
+}
+
+.exit-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.35);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 9999;
+}
+
+.exit-modal {
+  width: min(520px, calc(100vw - 40px));
+  background: #252526;
+  border: 1px solid #3c3c3c;
+  border-radius: 6px;
+  box-shadow: 0 14px 34px rgba(0, 0, 0, 0.42);
+  color: #d4d4d4;
+  padding: 14px;
+}
+
+.exit-modal-title {
+  font-size: 15px;
+  font-weight: 700;
+  margin-bottom: 8px;
+}
+
+.exit-modal-body {
+  font-size: 13px;
+  line-height: 1.55;
+  color: #c8c8c8;
+}
+
+.exit-modal-actions {
+  margin-top: 14px;
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.exit-modal-btn {
+  height: 30px;
+  padding: 0 12px;
+  border: 1px solid #5a5a5a;
+  border-radius: 4px;
+  background: #2f2f2f;
+  color: #e6e6e6;
+}
+
+.exit-modal-btn:hover {
+  background: #3a3a3a;
+}
+
+.exit-modal-btn.primary {
+  background: #0e639c;
+  border-color: #1177bb;
+  color: #fff;
+}
+
+.exit-modal-btn.primary:hover {
+  background: #1177bb;
+}
+
+.exit-modal-btn.warning {
+  background: #7a4b09;
+  border-color: #99600e;
+  color: #fff;
+}
+
+.exit-modal-btn.warning:hover {
+  background: #99600e;
+}
+
+.exit-modal-btn.danger {
+  background: #8a1f1f;
+  border-color: #a52929;
+  color: #fff;
+}
+
+.exit-modal-btn.danger:hover {
+  background: #a52929;
+}

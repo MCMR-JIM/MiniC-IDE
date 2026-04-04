@@ -1,0 +1,141 @@
+.file-tree {
+  flex: 1;
+  overflow-y: auto;
+  overflow-x: hidden;
+  user-select: none;
+  background: #252526;
+  min-height: 0;
+}
+
+.file-tree-header {
+  padding: 8px 12px 4px;
+  font-size: 11px;
+  font-weight: 700;
+  color: #bbbbbb;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+}
+
+.file-tree-empty {
+  padding: 20px 12px;
+  color: #888;
+  font-size: 12px;
+  text-align: center;
+}
+
+.file-tree-empty p { margin: 4px 0; }
+
+.file-node {
+  display: flex;
+  align-items: center;
+  height: 22px;
+  cursor: pointer;
+  color: #cccccc;
+  font-size: 13px;
+  gap: 4px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.file-node:hover {
+  background: #2a2d2e;
+}
+
+.file-node.dir { color: #cccccc; }
+.file-node.file { color: #d4d4d4; }
+
+.file-node.file-node-active {
+  background: #37373d;
+  color: #ffffff;
+}
+
+.file-node.file-node-active:hover {
+  background: #3c3c42;
+}
+
+.file-node-arrow {
+  width: 16px;
+  height: 16px;
+  text-align: center;
+  flex-shrink: 0;
+  position: relative;
+}
+
+.file-node-arrow::before {
+  content: '';
+  position: absolute;
+  left: 3px;
+  top: 3px;
+  width: 8px;
+  height: 8px;
+  border-right: 2px solid #8f8f8f;
+  border-bottom: 2px solid #8f8f8f;
+  transform: rotate(-45deg);
+  transform-origin: center;
+  transition: transform 0.08s ease;
+}
+
+.file-node-arrow.expanded::before {
+  transform: rotate(45deg);
+}
+
+.file-node-arrow.placeholder::before {
+  opacity: 0;
+}
+
+.file-node-icon {
+  font-size: 14px;
+  width: 18px;
+  text-align: center;
+  flex-shrink: 0;
+  line-height: 1;
+}
+
+.file-node-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+}
+
+.file-node-inline {
+  background: #2a2d2e;
+}
+
+.file-node-inline-input {
+  flex: 1;
+  min-width: 0;
+  height: 20px;
+  padding: 0 6px;
+  border: 1px solid #007acc;
+  border-radius: 2px;
+  background: #1f1f1f;
+  color: #dcdcdc;
+  font-size: 12px;
+  user-select: text;
+}
+
+.file-node-flags {
+  margin-left: auto;
+  padding-right: 8px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.file-node-running-badge {
+  color: #4ec9b0;
+  font-size: 11px;
+  line-height: 1;
+  transform: translateY(-0.5px);
+  flex-shrink: 0;
+}
+
+.file-node-dirty-dot {
+  color: #e8a93a;
+  font-size: 10px;
+  line-height: 1;
+  flex-shrink: 0;
+}

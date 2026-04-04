@@ -1,0 +1,71 @@
+.find-replace-bar {
+  position: absolute;
+  top: 0;
+  right: 80px;
+  background: #252526;
+  border: 1px solid #454545;
+  border-top: none;
+  border-radius: 0 0 4px 4px;
+  padding: 6px 8px;
+  z-index: 100;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.4);
+  min-width: 380px;
+}
+
+.find-replace-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.fr-toggle {
+  background: none;
+  border: none;
+  color: #cccccc;
+  cursor: pointer;
+  font-size: 12px;
+  padding: 2px 4px;
+  width: 20px;
+}
+
+.fr-input {
+  flex: 1;
+  background: #3c3c3c;
+  border: 1px solid #555;
+  color: #cccccc;
+  padding: 3px 8px;
+  font-size: 13px;
+  border-radius: 2px;
+  outline: none;
+}
+
+.fr-input:focus { border-color: #007acc; }
+
+.fr-btn {
+  background: none;
+  border: 1px solid transparent;
+  color: #cccccc;
+  cursor: pointer;
+  font-size: 11px;
+  padding: 3px 6px;
+  border-radius: 2px;
+  white-space: nowrap;
+}
+
+.fr-btn:hover { background: #3c3c3c; border-color: #555; }
+.fr-btn.active { background: #094771; border-color: #007acc; }
+
+.fr-close {
+  background: none;
+  border: none;
+  color: #cccccc;
+  cursor: pointer;
+  font-size: 16px;
+  padding: 0 4px;
+  line-height: 1;
+}
+
+.fr-close:hover { color: #fff; }
