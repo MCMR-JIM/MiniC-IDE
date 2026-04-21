@@ -1,4 +1,5 @@
 use base64::Engine;
+use std::collections::HashSet;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -163,15 +164,42 @@ fn incremental_decode_chunk(decoder: &mut Decoder, src: &[u8], last: bool) -> St
     out
 }
 
-fn find_tcc(app: &tauri::AppHandle) -> (std::path::PathBuf, std::path::PathBuf) {
-    let exe_dir = std::env::current_exe().unwrap().parent().unwrap().to_path_buf();
+fn find_gnu_candidates(app: &tauri::AppHandle) -> Vec<String> {
+    let exe_dir = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(PathBuf::from))
+        .unwrap_or_else(|| PathBuf::from("."));
     let resource_dir = app.path().resource_dir().unwrap_or_else(|_| exe_dir.clone());
-    let tcc_exe = [exe_dir.clone(), resource_dir.clone()].iter()
-        .map(|d| d.join("tcc.exe"))
-        .find(|p| p.exists())
-        .unwrap_or_else(|| exe_dir.join("tcc.exe"));
-    let tcc_dir = tcc_exe.parent().unwrap().to_path_buf();
-    (tcc_exe, tcc_dir)
+
+    let mut out = Vec::<String>::new();
+    let mut seen = HashSet::<String>::new();
+    let bases = [exe_dir, resource_dir];
+
+    for base in bases {
+        let paths = [
+            base.join("mingw").join("bin").join("g++.exe"),
+            base.join("mingw").join("bin").join("gcc.exe"),
+            base.join("g++.exe"),
+            base.join("gcc.exe"),
+        ];
+        for p in paths {
+            if p.exists() {
+                let s = p.to_string_lossy().to_string();
+                if seen.insert(s.clone()) {
+                    out.push(s);
+                }
+            }
+        }
+    }
+
+    for s in ["g++.exe", "g++", "gcc.exe", "gcc"] {
+        let ss = s.to_string();
+        if seen.insert(ss.clone()) {
+            out.push(ss);
+        }
+    }
+
+    out
 }
 
 #[tauri::command]
@@ -180,8 +208,6 @@ async fn compile_file(
     file_path: String,
     output_path: Option<String>,
 ) -> Result<CompileResult, String> {
-    let (tcc_exe, tcc_dir) = find_tcc(&app);
-
     let out = output_path.unwrap_or_else(|| {
         let p = Path::new(&file_path);
         p.with_extension("exe").to_string_lossy().to_string()
@@ -194,29 +220,47 @@ async fn compile_file(
     let compile_source_path = PathBuf::from(&file_path);
     #[cfg(not(windows))]
     let cleanup_source_path: Option<PathBuf> = None;
-    let b_flag = format!("-B{}", tcc_dir.to_string_lossy());
-    let mut cmd = Command::new(&tcc_exe);
-    cmd.stdin(Stdio::null());
-    #[cfg(windows)]
-    let subsystem_flag = "-Wl,-subsystem=console";
-    #[cfg(not(windows))]
-    let subsystem_flag = "";
 
-    cmd.arg("-o").arg(&out).arg(&b_flag);
-    if !subsystem_flag.is_empty() {
-        cmd.arg(subsystem_flag);
-    }
-    cmd.arg(&compile_source_path);
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-        cmd.creation_flags(CREATE_NO_WINDOW);
-    }
+    let ext = Path::new(&file_path)
+        .extension()
+        .and_then(|x| x.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    let force_cpp_mode = ext == "c";
 
-    let result = cmd
-        .output()
-        .map_err(|e| format!("无法运行TCC: {}", e))?;
+    let mut compile_output: Option<std::process::Output> = None;
+    let mut spawn_errors: Vec<String> = Vec::new();
+    let candidates = find_gnu_candidates(&app);
+    for cc in candidates {
+        let mut cmd = Command::new(&cc);
+        cmd.stdin(Stdio::null());
+        if force_cpp_mode {
+            cmd.arg("-x").arg("c++");
+        }
+        cmd.arg("-o").arg(&out).arg(&compile_source_path);
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+            cmd.creation_flags(CREATE_NO_WINDOW);
+        }
+
+        match cmd.output() {
+            Ok(o) => {
+                compile_output = Some(o);
+                break;
+            }
+            Err(e) => {
+                spawn_errors.push(format!("{}: {}", cc, e));
+            }
+        }
+    }
+    let result = compile_output.ok_or_else(|| {
+        format!(
+            "未找到可用的 GCC/g++ 编译器。请安装 MinGW-w64，或将 mingw/bin 放到应用目录下。尝试记录: {}",
+            spawn_errors.join(" | ")
+        )
+    })?;
 
     if let Some(tmp) = cleanup_source_path {
         let _ = std::fs::remove_file(tmp);
@@ -546,6 +590,19 @@ fn spawn_pty_executable(
         return Ok(());
     }
 
+    #[cfg(windows)]
+    let pty_cp: u32 = windows_runtime_code_page();
+    #[cfg(not(windows))]
+    let pty_cp: u32 = 65001;
+    let _ = app.emit(
+        "terminal-output-chunk",
+        TerminalChunkPayload {
+            data: format!("__MINIC_CODEPAGE__{}", pty_cp),
+            stream: "meta",
+            b64: None,
+        },
+    );
+
     let master = pair.master;
     let reader = master
         .try_clone_reader()
@@ -858,7 +915,7 @@ async fn open_file_dialog(app: tauri::AppHandle) -> Result<Option<String>, Strin
     use tauri_plugin_dialog::DialogExt;
     let file = app.dialog()
         .file()
-        .add_filter("C Files", &["c", "h"])
+        .add_filter("C/C++ Files", &["c", "h", "cpp", "cc", "cxx", "hpp", "hh", "hxx"])
         .add_filter("All Files", &["*"])
         .blocking_pick_file();
     Ok(file.map(|f| f.to_string()))
@@ -867,7 +924,7 @@ async fn open_file_dialog(app: tauri::AppHandle) -> Result<Option<String>, Strin
 #[tauri::command]
 async fn save_file_dialog(app: tauri::AppHandle, default_name: Option<String>) -> Result<Option<String>, String> {
     use tauri_plugin_dialog::DialogExt;
-    let mut builder = app.dialog().file().add_filter("C Files", &["c", "h"]);
+    let mut builder = app.dialog().file().add_filter("C/C++ Files", &["c", "h", "cpp", "cc", "cxx", "hpp", "hh", "hxx"]);
     if let Some(name) = default_name {
         builder = builder.set_file_name(&name);
     }

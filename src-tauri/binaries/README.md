@@ -1,18 +1,9 @@
 # `src-tauri/binaries` Notice
 
-This directory is intentionally ignored by Git.
+This directory only keeps legacy local TCC files from the old toolchain layout.
 
-Reason:
-- It contains third-party runtime/compiler binaries.
-- Redistribution/licensing obligations may vary by component and version.
-
-Project policy:
-- Keep binaries local in development.
-- Do not commit vendor binaries to this repository by default.
-- Before distribution, verify the license terms of each binary you bundle.
-
-Required local files for current build configuration:
-- `tcc-x86_64-pc-windows-msvc.exe`
-- `libtcc.dll`
-- `tcc-include/`
-- `tcc-lib/`
+Current project policy:
+- GCC/MinGW is the active build/runtime compiler path.
+- Installer resources now come from `src-tauri/resources/mingw/`.
+- Files in this directory stay ignored by Git by default.
+- You can keep or remove local TCC files as needed; current builds do not depend on them.

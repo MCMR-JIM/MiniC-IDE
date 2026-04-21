@@ -6,8 +6,8 @@ MiniC IDE 是一个面向 C 语言教学/练习的桌面 IDE（Tauri + React + T
 
 ## 功能概览
 
-- C 文件编辑（Monaco）
-- 编译与运行（内置 TCC）
+- C/C++ 文件编辑（Monaco）
+- 编译与运行（GCC / g++）
 - 终端输出与输入
 - 文件树操作（新建、重命名、删除、在资源管理器中打开）
 - 查找替换
@@ -29,6 +29,7 @@ MiniC IDE 是一个面向 C 语言教学/练习的桌面 IDE（Tauri + React + T
 - Node.js 18+（建议 20+）
 - Rust stable
 - Windows（当前打包目标为 NSIS 安装包）
+- MinGW-w64（需可用 `g++`，或将 `mingw/bin` 放在应用目录下）
 
 ## 本地开发
 
@@ -51,5 +52,6 @@ npm run tauri build
 
 - `src/`：前端界面（React）
 - `src-tauri/`：后端命令、打包配置、资源
-- `src-tauri/binaries/`：随应用分发的 TCC 相关文件
+- `src-tauri/resources/mingw/`：随应用分发的 MinGW 编译器资源（工具链本体默认不入库）
+- `src/utils/`：前端通用工具函数
 - `scripts/`：图标/资源处理脚本

@@ -147,6 +147,90 @@ const b64ToBytes = (b64: string): Uint8Array => {
   return arr;
 };
 
+const codePageToEncoding = (cp: number): string => {
+  switch (cp) {
+    case 65001:
+      return 'utf-8';
+    case 936:
+    case 54936:
+      return 'gbk';
+    case 950:
+      return 'big5';
+    case 932:
+      return 'shift_jis';
+    case 949:
+      return 'euc-kr';
+    case 1252:
+      return 'windows-1252';
+    case 1251:
+      return 'windows-1251';
+    default:
+      return 'utf-8';
+  }
+};
+
+const createTextDecoder = (label: string): TextDecoder => {
+  try {
+    return new TextDecoder(label);
+  } catch {
+    return new TextDecoder('utf-8');
+  }
+};
+
+const looksLikeUtf8 = (bytes: Uint8Array): boolean => {
+  let i = 0;
+  let hasNonAscii = false;
+  while (i < bytes.length) {
+    const b0 = bytes[i];
+    if (b0 <= 0x7f) {
+      i += 1;
+      continue;
+    }
+    hasNonAscii = true;
+
+    let need = 0;
+    if ((b0 & 0xe0) === 0xc0) {
+      if (b0 < 0xc2) return false;
+      need = 1;
+    } else if ((b0 & 0xf0) === 0xe0) {
+      need = 2;
+    } else if ((b0 & 0xf8) === 0xf0) {
+      if (b0 > 0xf4) return false;
+      need = 3;
+    } else {
+      return false;
+    }
+
+    if (i + need >= bytes.length) {
+      return false;
+    }
+
+    const b1 = bytes[i + 1];
+    if (need >= 1 && (b1 & 0xc0) !== 0x80) return false;
+    if (need >= 2) {
+      const b2 = bytes[i + 2];
+      if ((b2 & 0xc0) !== 0x80) return false;
+    }
+    if (need >= 3) {
+      const b3 = bytes[i + 3];
+      if ((b3 & 0xc0) !== 0x80) return false;
+    }
+
+    if ((b0 === 0xe0 && b1 < 0xa0) || (b0 === 0xed && b1 >= 0xa0)) return false;
+    if ((b0 === 0xf0 && b1 < 0x90) || (b0 === 0xf4 && b1 >= 0x90)) return false;
+
+    i += need + 1;
+  }
+  return hasNonAscii;
+};
+
+const extractCodePageHint = (text: string): number | null => {
+  const m = text.match(/(?:active\s+code\s+page|活动代码页)\s*[:：]\s*(\d{3,5})/i);
+  if (!m) return null;
+  const cp = parseInt(m[1], 10);
+  return Number.isNaN(cp) ? null : cp;
+};
+
 const Terminal: React.FC<TerminalProps> = ({ visible = true }) => {
   const { projectRoot } = useIDEStore();
   const hostRef = useRef<HTMLDivElement>(null);
@@ -165,10 +249,17 @@ const Terminal: React.FC<TerminalProps> = ({ visible = true }) => {
   const ptyStripStateRef = useRef<PtyStripState>(newPtyStripState());
   const ptyCrPendingRef = useRef(false);
   const renderDbgCountRef = useRef(0);
+  const ptyEncodingRef = useRef<string>(navigator.userAgent.toLowerCase().includes('windows') ? 'gbk' : 'utf-8');
+  const ptyDecoderRef = useRef<TextDecoder>(createTextDecoder(ptyEncodingRef.current));
+  const resetPtyDecoding = (encoding?: string) => {
+    if (encoding) ptyEncodingRef.current = encoding;
+    ptyDecoderRef.current = createTextDecoder(ptyEncodingRef.current);
+  };
   const resetPtyStripState = () => {
     ptyStripStateRef.current = newPtyStripState();
     ptyCrPendingRef.current = false;
     renderDbgCountRef.current = 0;
+    resetPtyDecoding();
   };
   const emitRunningState = (running: boolean) => {
     document.dispatchEvent(new CustomEvent('terminal-running-changed', {
@@ -481,7 +572,21 @@ const Terminal: React.FC<TerminalProps> = ({ visible = true }) => {
         return;
       }
 
+      if (payload.stream === 'meta' && data.startsWith('__MINIC_CODEPAGE__')) {
+        const cp = parseInt(data.replace('__MINIC_CODEPAGE__', ''), 10);
+        const encoding = codePageToEncoding(Number.isNaN(cp) ? 65001 : cp);
+        resetPtyDecoding(encoding);
+        dbg(`pty code page=${cp} encoding=${encoding}`);
+        return;
+      }
+
       if (payload.stream === 'meta' && data.startsWith('__MINIC_EXIT_CODE__')) {
+        try {
+          const tail = ptyDecoderRef.current.decode();
+          if (tail) t.write(tail);
+        } catch {
+          // Ignore decoder flush failures.
+        }
         ptyForwardRef.current = false;
         emitRunningState(false);
         resetPtyStripState();
@@ -495,7 +600,28 @@ const Terminal: React.FC<TerminalProps> = ({ visible = true }) => {
 
       if (typeof payload.b64 === 'string' && payload.b64.length > 0) {
         try {
-          t.write(b64ToBytes(payload.b64));
+          const bytes = b64ToBytes(payload.b64);
+          if (ptyEncodingRef.current !== 'utf-8' && looksLikeUtf8(bytes)) {
+            try {
+              const tail = ptyDecoderRef.current.decode();
+              if (tail) t.write(tail);
+            } catch {
+              // Ignore decoder flush failures.
+            }
+            resetPtyDecoding('utf-8');
+          }
+
+          const text = ptyDecoderRef.current.decode(bytes, { stream: true });
+          if (text) {
+            const hintedCp = extractCodePageHint(text);
+            if (hintedCp !== null) {
+              const hintedEncoding = codePageToEncoding(hintedCp);
+              if (hintedEncoding !== ptyEncodingRef.current) {
+                resetPtyDecoding(hintedEncoding);
+              }
+            }
+            t.write(text);
+          }
         } catch {
           // Ignore malformed payloads.
         }

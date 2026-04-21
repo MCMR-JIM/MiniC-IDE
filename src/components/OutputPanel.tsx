@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { useIDEStore } from '../store/ideStore';
 import Terminal from './Terminal';
+import { COMPILE_ERROR_LOCATION_RE } from '../utils/language';
 import './OutputPanel.css';
 
 const OutputPanel: React.FC = () => {
@@ -22,7 +23,7 @@ const OutputPanel: React.FC = () => {
   }, []);
 
   const parseErrorLine = (line: string) => {
-    const match = line.match(/^(.+\.c):(\d+):/);
+    const match = line.match(COMPILE_ERROR_LOCATION_RE);
     if (match) {
       return (
         <span>

@@ -12,6 +12,7 @@ import StatusBar from './components/StatusBar';
 import ContextMenu from './components/ContextMenu';
 import { CompileResult } from './types';
 import { isTauriRuntime } from './tauriEnv';
+import { getEditorLanguageFromFileName } from './utils/language';
 import './App.css';
 
 type ExitDialogState =
@@ -205,7 +206,7 @@ const App: React.FC = () => {
     if (!state.compileResult?.success) return;
     const path = activeTabPath;
     if (!path) return;
-    const exePath = path.replace(/\.c$/i, '.exe');
+    const exePath = path.replace(/\.[^\\/]+$/, '.exe');
     const cwd = path.includes('\\') ? path.replace(/\\[^\\]+$/, '') : path.replace(/\/[^\/]+$/, '');
     setOutputVisible(true);
     document.dispatchEvent(new CustomEvent('switch-output-tab', { detail: { tab: 'terminal' } }));
@@ -253,7 +254,7 @@ const App: React.FC = () => {
       if (selected) {
         const name = selected.split(/[\\/]/).pop() ?? selected;
         const content = await invoke<string>('read_file_content', { path: selected });
-        const lang = name.endsWith('.c') || name.endsWith('.h') ? 'c' : 'plaintext';
+        const lang = getEditorLanguageFromFileName(name);
         openTab({ path: selected, name, content, modified: false, language: lang });
       }
     } catch (e) { console.error(e); }
@@ -305,7 +306,7 @@ const App: React.FC = () => {
         if (selected && !isDir) {
           const name = selected.split(/[\\/]/).pop() ?? selected;
           const content = await invoke<string>('read_file_content', { path: selected });
-          const lang = name.endsWith('.c') || name.endsWith('.h') ? 'c' : 'plaintext';
+          const lang = getEditorLanguageFromFileName(name);
           openTab({ path: selected, name, content, modified: false, language: lang });
         }
       }

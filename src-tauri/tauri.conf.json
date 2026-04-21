@@ -29,21 +29,15 @@
     "active": true,
     "publisher": "MCMR",
     "targets": ["nsis"],
+    "resources": [
+      "resources/mingw"
+    ],
     "icon": [
       "icons/icon.ico",
       "icons/32x32.png",
       "icons/128x128.png",
       "icons/128x128@2x.png",
       "icons/icon.png"
-    ],
-    "resources": {
-      "binaries/tcc-x86_64-pc-windows-msvc.exe": "tcc.exe",
-      "binaries/libtcc.dll": "libtcc.dll",
-      "binaries/tcc-include/": "include/",
-      "binaries/tcc-lib/": "lib/"
-    },
-    "externalBin": [
-      "binaries/tcc"
     ]
   },
   "plugins": {

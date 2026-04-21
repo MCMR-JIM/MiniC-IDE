@@ -3,14 +3,8 @@ import { useIDEStore } from '../store/ideStore';
 import { FileEntry } from '../types';
 import { invoke } from '@tauri-apps/api/core';
 import { getFileIconComponent } from './FileIcons';
+import { getEditorLanguageFromFileName } from '../utils/language';
 import './FileTree.css';
-
-const getLanguage = (name: string): string => {
-  if (name.endsWith('.c') || name.endsWith('.h')) return 'c';
-  if (name.endsWith('.json')) return 'json';
-  if (name.endsWith('.md')) return 'markdown';
-  return 'plaintext';
-};
 
 type InlineMode = 'newFile' | 'newFolder' | 'rename';
 
@@ -119,7 +113,7 @@ const FileNode: React.FC<{
       }
       try {
         const content = await invoke<string>('read_file_content', { path: entry.path });
-        openTab({ path: entry.path, name: entry.name, content, modified: false, language: getLanguage(entry.name) });
+        openTab({ path: entry.path, name: entry.name, content, modified: false, language: getEditorLanguageFromFileName(entry.name) });
       } catch (e: unknown) {
         const msg = typeof e === 'string' ? e : String(e);
         openTab({ path: entry.path, name: entry.name, content: msg, modified: false, language: 'plaintext' });
@@ -264,7 +258,7 @@ const FileTree: React.FC = () => {
           name,
           content: '',
           modified: false,
-          language: getLanguage(name),
+          language: getEditorLanguageFromFileName(name),
         });
       } else if (inlineState.mode === 'newFolder') {
         const dirPath = joinPath(inlineState.parentPath, name);
