@@ -16,6 +16,14 @@ static STREAMING_PIDS: Mutex<Vec<u32>> = Mutex::new(Vec::new());
 
 static STREAMING_CHILD_COUNT: AtomicUsize = AtomicUsize::new(0);
 
+#[cfg(windows)]
+struct WindowsCompilePaths {
+    compile_source_path: PathBuf,
+    compile_output_path: PathBuf,
+    cleanup_source_path: Option<PathBuf>,
+    cleanup_output_path: Option<PathBuf>,
+}
+
 struct PtySession {
     stdin: Option<Box<dyn Write + Send>>,
     master: Option<Box<dyn MasterPty + Send>>,
@@ -256,12 +264,20 @@ async fn compile_file(
     });
 
     #[cfg(windows)]
-    let (compile_source_path, cleanup_source_path) =
-        prepare_windows_console_encoded_source(&file_path)?;
+    let WindowsCompilePaths {
+        compile_source_path,
+        compile_output_path,
+        cleanup_source_path,
+        cleanup_output_path,
+    } = prepare_windows_compile_paths(&app, &file_path, &out)?;
     #[cfg(not(windows))]
     let compile_source_path = PathBuf::from(&file_path);
     #[cfg(not(windows))]
     let cleanup_source_path: Option<PathBuf> = None;
+    #[cfg(not(windows))]
+    let compile_output_path = PathBuf::from(&out);
+    #[cfg(not(windows))]
+    let cleanup_output_path: Option<PathBuf> = None;
 
     let mut compile_output: Option<std::process::Output> = None;
     let mut spawn_errors: Vec<String> = Vec::new();
@@ -270,7 +286,7 @@ async fn compile_file(
         let mut cmd = Command::new(&cc);
         cmd.stdin(Stdio::null());
         cmd.arg("-x").arg(language.arg());
-        cmd.arg("-o").arg(&out).arg(&compile_source_path);
+        cmd.arg("-o").arg(&compile_output_path).arg(&compile_source_path);
         #[cfg(windows)]
         {
             use std::os::windows::process::CommandExt;
@@ -288,12 +304,21 @@ async fn compile_file(
             }
         }
     }
-    let result = compile_output.ok_or_else(|| {
-        format!(
-            "未找到可用的 GCC/g++ 编译器。请安装 MinGW-w64，或将 mingw/bin 放到应用目录下。尝试记录: {}",
-            spawn_errors.join(" | ")
-        )
-    })?;
+    let result = match compile_output {
+        Some(result) => result,
+        None => {
+            if let Some(tmp) = cleanup_source_path.as_ref() {
+                let _ = std::fs::remove_file(tmp);
+            }
+            if let Some(tmp) = cleanup_output_path.as_ref() {
+                let _ = std::fs::remove_file(tmp);
+            }
+            return Err(format!(
+                "未找到可用的 GCC/g++ 编译器。请安装 MinGW-w64，或将 mingw/bin 放到应用目录下。尝试记录: {}",
+                spawn_errors.join(" | ")
+            ));
+        }
+    };
 
     if let Some(tmp) = cleanup_source_path {
         let _ = std::fs::remove_file(tmp);
@@ -305,11 +330,29 @@ async fn compile_file(
     let log_enc = detect_source_encoding(Some(file_path.as_str()));
 
     let compile_source_display = compile_source_path.to_string_lossy().to_string();
+    let compile_output_display = compile_output_path.to_string_lossy().to_string();
     let mut stdout = decode_full_buffer(&result.stdout, log_enc);
     let mut stderr = decode_full_buffer(&result.stderr, log_enc);
     if compile_source_display != file_path {
         stdout = stdout.replace(&compile_source_display, &file_path);
         stderr = stderr.replace(&compile_source_display, &file_path);
+    }
+    if compile_output_display != out {
+        stdout = stdout.replace(&compile_output_display, &out);
+        stderr = stderr.replace(&compile_output_display, &out);
+    }
+
+    if result.status.success() && compile_output_path != PathBuf::from(&out) {
+        if let Err(e) = std::fs::copy(&compile_output_path, &out) {
+            if let Some(tmp) = cleanup_output_path.as_ref() {
+                let _ = std::fs::remove_file(tmp);
+            }
+            return Err(format!("编译成功，但无法写入输出文件 {}: {}", out, e));
+        }
+    }
+
+    if let Some(tmp) = cleanup_output_path {
+        let _ = std::fs::remove_file(tmp);
     }
 
     Ok(CompileResult {
@@ -355,43 +398,132 @@ fn detect_source_encoding(path: Option<&str>) -> &'static Encoding {
 }
 
 #[cfg(windows)]
-fn prepare_windows_console_encoded_source(
+fn unique_windows_temp_path(work_dir: &Path, prefix: &str, ext: &str) -> PathBuf {
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0);
+    work_dir.join(format!("{}-{}-{}.{}", prefix, std::process::id(), ts, ext))
+}
+
+#[cfg(windows)]
+fn try_windows_short_path(path: &Path) -> Option<PathBuf> {
+    use std::ffi::OsString;
+    use std::os::windows::ffi::{OsStrExt, OsStringExt};
+    use windows_sys::Win32::Storage::FileSystem::GetShortPathNameW;
+
+    let wide: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
+    let needed = unsafe { GetShortPathNameW(wide.as_ptr(), std::ptr::null_mut(), 0) };
+    if needed == 0 {
+        return None;
+    }
+
+    let mut out = vec![0u16; needed as usize + 1];
+    let written = unsafe { GetShortPathNameW(wide.as_ptr(), out.as_mut_ptr(), out.len() as u32) };
+    if written == 0 {
+        return None;
+    }
+
+    out.truncate(written as usize);
+    Some(PathBuf::from(OsString::from_wide(&out)))
+}
+
+#[cfg(windows)]
+fn windows_ascii_work_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    let exe_dir = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(PathBuf::from))
+        .unwrap_or_else(|| PathBuf::from("."));
+    let resource_dir = app.path().resource_dir().unwrap_or_else(|_| exe_dir.clone());
+    let bases = [exe_dir, resource_dir, std::env::temp_dir()];
+
+    for base in bases {
+        let ascii_base = if base.to_string_lossy().is_ascii() {
+            Some(base)
+        } else {
+            try_windows_short_path(&base)
+        };
+
+        let Some(ascii_base) = ascii_base else { continue; };
+        if !ascii_base.to_string_lossy().is_ascii() {
+            continue;
+        }
+
+        let work_dir = ascii_base.join("minic-build-temp");
+        if std::fs::create_dir_all(&work_dir).is_ok() && work_dir.to_string_lossy().is_ascii() {
+            return Ok(work_dir);
+        }
+    }
+
+    Err("无法找到可用于 Windows 编译的 ASCII 临时目录，请检查应用目录或系统临时目录权限。".to_string())
+}
+
+#[cfg(windows)]
+fn prepare_windows_compile_paths(
+    app: &tauri::AppHandle,
     file_path: &str,
-) -> Result<(PathBuf, Option<PathBuf>), String> {
+    output_path: &str,
+) -> Result<WindowsCompilePaths, String> {
     let src_path = PathBuf::from(file_path);
     let src_bytes = std::fs::read(&src_path).map_err(|e| format!("无法读取源文件: {}", e))?;
     let src_enc = detect_source_encoding(Some(file_path));
     let target_cp = windows_runtime_code_page();
     let target_enc = encoding_for_windows_code_page(target_cp);
-
-    // If the file already matches target console code page, compile it directly.
-    if src_enc.name() == target_enc.name() {
-        return Ok((src_path, None));
-    }
-
-    let (text, _, _) = src_enc.decode(&src_bytes);
-    let (encoded, _, _) = target_enc.encode(&text);
-
-    let mut tmp = std::env::temp_dir();
+    let work_dir = windows_ascii_work_dir(app)?;
     let ext = src_path
         .extension()
         .and_then(|x| x.to_str())
         .unwrap_or("c");
-    let ts = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis())
-        .unwrap_or(0);
-    tmp.push(format!(
-        "minic-compile-{}-{}-cp{}.{}",
-        std::process::id(),
-        ts,
-        target_cp,
-        ext
-    ));
 
-    std::fs::write(&tmp, encoded.as_ref()).map_err(|e| format!("无法写入临时转码文件: {}", e))?;
+    let compile_source_path = unique_windows_temp_path(&work_dir, "minic-compile-src", ext);
+    let compile_output_path = unique_windows_temp_path(&work_dir, "minic-compile-out", "exe");
 
-    Ok((tmp.clone(), Some(tmp)))
+    if src_enc.name() == target_enc.name() {
+        std::fs::write(&compile_source_path, &src_bytes)
+            .map_err(|e| format!("无法写入临时源文件: {}", e))?;
+    } else {
+        let (text, _, _) = src_enc.decode(&src_bytes);
+        let (encoded, _, _) = target_enc.encode(&text);
+        std::fs::write(&compile_source_path, encoded.as_ref())
+            .map_err(|e| format!("无法写入临时转码文件: {}", e))?;
+    }
+
+    if let Some(parent) = Path::new(output_path).parent() {
+        std::fs::create_dir_all(parent).map_err(|e| format!("无法创建输出目录: {}", e))?;
+    }
+
+    Ok(WindowsCompilePaths {
+        compile_source_path: compile_source_path.clone(),
+        compile_output_path: compile_output_path.clone(),
+        cleanup_source_path: Some(compile_source_path),
+        cleanup_output_path: Some(compile_output_path),
+    })
+}
+
+#[cfg(windows)]
+fn prepare_windows_runtime_executable(
+    app: &tauri::AppHandle,
+    exe_path: &Path,
+) -> Result<(PathBuf, Option<PathBuf>), String> {
+    if exe_path.to_string_lossy().is_ascii() {
+        return Ok((exe_path.to_path_buf(), None));
+    }
+
+    if let Some(short) = try_windows_short_path(exe_path) {
+        if short.to_string_lossy().is_ascii() {
+            return Ok((short, None));
+        }
+    }
+
+    let work_dir = windows_ascii_work_dir(app)?;
+    let ext = exe_path
+        .extension()
+        .and_then(|x| x.to_str())
+        .unwrap_or("exe");
+    let temp_exe_path = unique_windows_temp_path(&work_dir, "minic-run-exe", ext);
+    std::fs::copy(exe_path, &temp_exe_path)
+        .map_err(|e| format!("无法为运行复制可执行文件: {}", e))?;
+    Ok((temp_exe_path.clone(), Some(temp_exe_path)))
 }
 
 fn spawn_streaming_process(
@@ -557,18 +689,19 @@ fn spawn_pty_executable(
         }
     };
 
+    #[cfg(windows)]
+    let (runtime_exe_path, runtime_exe_cleanup) =
+        prepare_windows_runtime_executable(&app, &resolved_exe_path)?;
+
+    #[cfg(not(windows))]
     let resolved_exe_path_str = resolved_exe_path.to_string_lossy().to_string();
 
     #[cfg(windows)]
     let (mut cmd, wrapper_script_path): (CommandBuilder, Option<PathBuf>) = {
-        let mut script_path = std::env::temp_dir();
-        let ts = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_millis())
-            .unwrap_or(0);
-        script_path.push(format!("minic-run-{}-{}.cmd", std::process::id(), ts));
+        let work_dir = windows_ascii_work_dir(&app)?;
+        let script_path = unique_windows_temp_path(&work_dir, "minic-run-script", "cmd");
 
-        let escaped_exe = resolved_exe_path_str.replace('\"', "\"\"");
+        let escaped_exe = runtime_exe_path.to_string_lossy().replace('\"', "\"\"");
         let cp = windows_runtime_code_page();
         let script = format!("@echo off\r\nchcp {} > nul\r\n\"{}\"\r\n", cp, escaped_exe);
         std::fs::write(&script_path, script)
@@ -585,6 +718,8 @@ fn spawn_pty_executable(
     let mut cmd = CommandBuilder::new(&resolved_exe_path_str);
     #[cfg(not(windows))]
     let wrapper_script_path: Option<PathBuf> = None;
+    #[cfg(not(windows))]
+    let runtime_exe_cleanup: Option<PathBuf> = None;
 
     if !cwd.is_empty() && Path::new(&cwd).exists() {
         cmd.cwd(&cwd);
@@ -594,6 +729,10 @@ fn spawn_pty_executable(
         Err(e) => {
             #[cfg(windows)]
             if let Some(p) = &wrapper_script_path {
+                let _ = std::fs::remove_file(p);
+            }
+            #[cfg(windows)]
+            if let Some(p) = &runtime_exe_cleanup {
                 let _ = std::fs::remove_file(p);
             }
             return Err(format!("{}", e));
@@ -618,6 +757,10 @@ fn spawn_pty_executable(
     if let Ok(Some(status)) = child.try_wait() {
         #[cfg(windows)]
         if let Some(p) = &wrapper_script_path {
+            let _ = std::fs::remove_file(p);
+        }
+        #[cfg(windows)]
+        if let Some(p) = &runtime_exe_cleanup {
             let _ = std::fs::remove_file(p);
         }
         unregister_streaming_child(pid);
@@ -689,6 +832,8 @@ fn spawn_pty_executable(
     let app_meta = app;
     #[cfg(windows)]
     let wrapper_script_path_for_waiter = wrapper_script_path;
+    #[cfg(windows)]
+    let runtime_exe_cleanup_for_waiter = runtime_exe_cleanup;
     std::thread::spawn(move || {
         let code = child
             .wait()
@@ -698,6 +843,11 @@ fn spawn_pty_executable(
 
         #[cfg(windows)]
         if let Some(p) = wrapper_script_path_for_waiter {
+            let _ = std::fs::remove_file(p);
+        }
+
+        #[cfg(windows)]
+        if let Some(p) = runtime_exe_cleanup_for_waiter {
             let _ = std::fs::remove_file(p);
         }
 
