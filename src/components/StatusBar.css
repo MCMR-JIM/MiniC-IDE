@@ -6,7 +6,7 @@
   background: #007acc;
   color: #ffffff;
   font-size: 12px;
-  padding: 0 8px;
+  padding: 0 0 0 8px;
   flex-shrink: 0;
   user-select: none;
 }
@@ -15,14 +15,14 @@
 .status-right {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 0;
   overflow: hidden;
 }
 
 .status-left { flex: 1; min-width: 0; }
 
 .status-item {
-  padding: 0 4px;
+  padding: 0;
   height: 22px;
   display: flex;
   align-items: center;
@@ -31,50 +31,64 @@
   overflow: hidden;
   text-overflow: ellipsis;
   max-width: 400px;
+  min-width: 40px;
+  justify-content: center;
 }
 
 .status-item:hover { background: rgba(255,255,255,0.15); }
 
 .status-branch { font-weight: 500; }
 
-.status-toggle { cursor: pointer; }
+.status-toggle { 
+  cursor: pointer;
+  padding: 0 8px;
+}
 .status-toggle.active { background: rgba(0,0,0,0.2); }
 
-.status-compile-btn,
-.status-run-btn,
-.status-stop-btn {
-  background: rgba(0,0,0,0.2);
-  border: none;
-  color: #fff;
-  font-size: 12px;
-  padding: 2px 10px;
+.status-compile,
+.status-run,
+.status-stop {
   cursor: pointer;
-  border-radius: 2px;
-  height: 18px;
-  display: flex;
-  align-items: center;
-  white-space: nowrap;
-  gap: 6px;
+  padding: 0 8px;
+  transition: background-color 0.12s ease, opacity 0.12s ease;
 }
 
-.status-compile-btn:hover { background: rgba(0,0,0,0.35); }
-.status-run-btn { background: rgba(0,100,0,0.5); }
-.status-run-btn:hover { background: rgba(0,120,0,0.6); }
-.status-stop-btn { background: rgba(140,20,20,0.7); }
-.status-stop-btn:hover { background: rgba(170,25,25,0.8); }
+.status-compile {
+  background: rgba(142, 92, 18, 0.78);
+}
+
+.status-compile:hover:not(.disabled) {
+  background: rgba(168, 109, 20, 0.9);
+}
+
+.status-compile.disabled {
+  background: rgba(142, 92, 18, 0.45);
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.status-run {
+  background: rgba(0,100,0,0.5);
+}
+
+.status-run:hover {
+  background: rgba(0, 124, 0, 0.66);
+}
+
+.status-stop {
+  background: rgba(140,20,20,0.7);
+}
+
+.status-stop:hover {
+  background: rgba(170, 24, 24, 0.82);
+}
+
 .status-stop-icon {
   display: inline-flex;
   align-items: center;
   justify-content: center;
   line-height: 1;
   transform: translateY(-0.5px);
-}
-
-.status-compile-btn:disabled,
-.status-run-btn:disabled,
-.status-stop-btn:disabled {
-  opacity: 0.55;
-  cursor: not-allowed;
 }
 
 .status-running {

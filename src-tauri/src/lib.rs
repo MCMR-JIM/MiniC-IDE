@@ -112,6 +112,27 @@ pub struct FileEntry {
     pub children: Option<Vec<FileEntry>>,
 }
 
+#[derive(serde::Serialize, serde::Deserialize)]
+pub struct InspectedPath {
+    pub path: String,
+    pub is_dir: bool,
+}
+
+#[derive(Clone, Copy)]
+enum SourceLanguage {
+    C,
+    Cpp,
+}
+
+impl SourceLanguage {
+    fn arg(self) -> &'static str {
+        match self {
+            Self::C => "c",
+            Self::Cpp => "c++",
+        }
+    }
+}
+
 fn encoding_for_windows_code_page(cp: u32) -> &'static Encoding {
     match cp {
         65001 => encoding_rs::UTF_8,
@@ -164,35 +185,55 @@ fn incremental_decode_chunk(decoder: &mut Decoder, src: &[u8], last: bool) -> St
     out
 }
 
-fn find_gnu_candidates(app: &tauri::AppHandle) -> Vec<String> {
+fn detect_source_language(file_path: &str) -> Result<SourceLanguage, String> {
+    let ext = Path::new(file_path)
+        .extension()
+        .and_then(|x| x.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+
+    match ext.as_str() {
+        "c" => Ok(SourceLanguage::C),
+        "cc" | "cpp" | "cxx" => Ok(SourceLanguage::Cpp),
+        "h" | "hh" | "hpp" | "hxx" => Err(
+            "当前文件是头文件，不能单独编译。请打开对应的 .c / .cc / .cpp / .cxx 源文件再编译。"
+                .to_string(),
+        ),
+        _ => Err("当前文件类型不支持编译，仅支持 .c / .cc / .cpp / .cxx 源文件。".to_string()),
+    }
+}
+
+fn find_gnu_candidates(app: &tauri::AppHandle, language: SourceLanguage) -> Vec<String> {
     let exe_dir = std::env::current_exe()
         .ok()
         .and_then(|p| p.parent().map(PathBuf::from))
         .unwrap_or_else(|| PathBuf::from("."));
     let resource_dir = app.path().resource_dir().unwrap_or_else(|_| exe_dir.clone());
 
+    let ordered_names = match language {
+        SourceLanguage::C => ["gcc.exe", "gcc", "g++.exe", "g++"],
+        SourceLanguage::Cpp => ["g++.exe", "g++", "gcc.exe", "gcc"],
+    };
+
     let mut out = Vec::<String>::new();
     let mut seen = HashSet::<String>::new();
     let bases = [exe_dir, resource_dir];
 
     for base in bases {
-        let paths = [
-            base.join("mingw").join("bin").join("g++.exe"),
-            base.join("mingw").join("bin").join("gcc.exe"),
-            base.join("g++.exe"),
-            base.join("gcc.exe"),
-        ];
-        for p in paths {
-            if p.exists() {
-                let s = p.to_string_lossy().to_string();
-                if seen.insert(s.clone()) {
-                    out.push(s);
+        for name in ordered_names {
+            let paths = [base.join("mingw").join("bin").join(name), base.join(name)];
+            for p in paths {
+                if p.exists() {
+                    let s = p.to_string_lossy().to_string();
+                    if seen.insert(s.clone()) {
+                        out.push(s);
+                    }
                 }
             }
         }
     }
 
-    for s in ["g++.exe", "g++", "gcc.exe", "gcc"] {
+    for s in ordered_names {
         let ss = s.to_string();
         if seen.insert(ss.clone()) {
             out.push(ss);
@@ -208,6 +249,7 @@ async fn compile_file(
     file_path: String,
     output_path: Option<String>,
 ) -> Result<CompileResult, String> {
+    let language = detect_source_language(&file_path)?;
     let out = output_path.unwrap_or_else(|| {
         let p = Path::new(&file_path);
         p.with_extension("exe").to_string_lossy().to_string()
@@ -221,22 +263,13 @@ async fn compile_file(
     #[cfg(not(windows))]
     let cleanup_source_path: Option<PathBuf> = None;
 
-    let ext = Path::new(&file_path)
-        .extension()
-        .and_then(|x| x.to_str())
-        .unwrap_or("")
-        .to_ascii_lowercase();
-    let force_cpp_mode = ext == "c";
-
     let mut compile_output: Option<std::process::Output> = None;
     let mut spawn_errors: Vec<String> = Vec::new();
-    let candidates = find_gnu_candidates(&app);
+    let candidates = find_gnu_candidates(&app, language);
     for cc in candidates {
         let mut cmd = Command::new(&cc);
         cmd.stdin(Stdio::null());
-        if force_cpp_mode {
-            cmd.arg("-x").arg("c++");
-        }
+        cmd.arg("-x").arg(language.arg());
         cmd.arg("-o").arg(&out).arg(&compile_source_path);
         #[cfg(windows)]
         {
@@ -271,12 +304,18 @@ async fn compile_file(
     #[cfg(not(windows))]
     let log_enc = detect_source_encoding(Some(file_path.as_str()));
 
-    let stdout = decode_full_buffer(&result.stdout, log_enc);
+    let compile_source_display = compile_source_path.to_string_lossy().to_string();
+    let mut stdout = decode_full_buffer(&result.stdout, log_enc);
+    let mut stderr = decode_full_buffer(&result.stderr, log_enc);
+    if compile_source_display != file_path {
+        stdout = stdout.replace(&compile_source_display, &file_path);
+        stderr = stderr.replace(&compile_source_display, &file_path);
+    }
 
     Ok(CompileResult {
         success: result.status.success(),
         stdout,
-        stderr: decode_full_buffer(&result.stderr, log_enc),
+        stderr,
         exit_code: result.status.code().unwrap_or(-1),
     })
 }
@@ -289,9 +328,7 @@ struct TerminalChunkPayload {
     b64: Option<String>,
 }
 
-fn detect_source_encoding(path: Option<&str>) -> &'static Encoding {
-    let Some(p) = path else { return GBK; };
-    let Ok(bytes) = std::fs::read(p) else { return GBK; };
+fn detect_buffer_encoding(bytes: &[u8]) -> &'static Encoding {
     if bytes.starts_with(&[0xEF, 0xBB, 0xBF]) {
         return encoding_rs::UTF_8;
     }
@@ -301,14 +338,20 @@ fn detect_source_encoding(path: Option<&str>) -> &'static Encoding {
     if bytes.starts_with(&[0xFE, 0xFF]) {
         return encoding_rs::UTF_16BE;
     }
-    if std::str::from_utf8(&bytes).is_ok() {
+    if std::str::from_utf8(bytes).is_ok() {
         return encoding_rs::UTF_8;
     }
 
     let mut detector = chardetng::EncodingDetector::new(chardetng::Iso2022JpDetection::Deny);
-    detector.feed(&bytes, true);
+    detector.feed(bytes, true);
     let enc = detector.guess(None, chardetng::Utf8Detection::Allow);
     Encoding::for_label(enc.name().as_bytes()).unwrap_or(GBK)
+}
+
+fn detect_source_encoding(path: Option<&str>) -> &'static Encoding {
+    let Some(p) = path else { return GBK; };
+    let Ok(bytes) = std::fs::read(p) else { return GBK; };
+    detect_buffer_encoding(&bytes)
 }
 
 #[cfg(windows)]
@@ -776,18 +819,27 @@ async fn run_terminal_command(window: tauri::Window, cmd: String, cwd: String) -
 #[tauri::command]
 async fn read_file_content(path: String) -> Result<String, String> {
     let bytes = std::fs::read(&path).map_err(|e| format!("无法读取文件 {}: {}", path, e))?;
-    if bytes.contains(&0u8) {
+    let enc = detect_buffer_encoding(&bytes);
+    let is_utf16 = matches!(enc.name(), "UTF-16LE" | "UTF-16BE");
+    if bytes.contains(&0u8) && !is_utf16 {
         return Err(format!("[二进制文件] 此文件为二进制格式，无法以文本方式显示: {}", path));
     }
-    if let Ok(s) = std::str::from_utf8(&bytes) {
-        return Ok(s.to_string());
+    let (cow, _, _) = enc.decode(&bytes);
+    Ok(cow.into_owned())
+}
+
+#[tauri::command]
+async fn inspect_paths(paths: Vec<String>) -> Result<Vec<InspectedPath>, String> {
+    let mut out = Vec::with_capacity(paths.len());
+    for path in paths {
+        let metadata = std::fs::metadata(&path)
+            .map_err(|e| format!("无法读取路径 {}: {}", path, e))?;
+        out.push(InspectedPath {
+            path,
+            is_dir: metadata.is_dir(),
+        });
     }
-    let (cow, _enc, had_errors) = GBK.decode(&bytes);
-    if !had_errors {
-        return Ok(cow.into_owned());
-    }
-    let (cow2, _enc2, _) = encoding_rs::UTF_16LE.decode(&bytes);
-    Ok(cow2.into_owned())
+    Ok(out)
 }
 
 #[tauri::command]
@@ -851,6 +903,28 @@ async fn delete_path(path: String) -> Result<(), String> {
 #[tauri::command]
 async fn rename_path(old_path: String, new_path: String) -> Result<(), String> {
     std::fs::rename(&old_path, &new_path).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn copy_file(src_path: String, dst_path: String) -> Result<(), String> {
+    let src = Path::new(&src_path);
+    let dst = Path::new(&dst_path);
+    
+    if !src.exists() {
+        return Err(format!("源文件不存在: {}", src_path));
+    }
+    
+    if src.is_dir() {
+        return Err("暂不支持复制文件夹".to_string());
+    }
+    
+    // 确保目标目录存在
+    if let Some(parent) = dst.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    
+    std::fs::copy(src, dst).map_err(|e| e.to_string())?;
+    Ok(())
 }
 
 #[tauri::command]
@@ -1002,9 +1076,11 @@ pub fn run() {
             create_directory,
             delete_path,
             rename_path,
+            copy_file,
             reveal_in_file_manager,
             open_folder_dialog,
             open_file_dialog,
+            inspect_paths,
             save_file_dialog,
             get_file_info,
             run_terminal_command,

@@ -44,23 +44,33 @@ const StatusBar: React.FC = () => {
         >
           ⊞ 输出
         </span>
-        <button
-          className="status-compile-btn"
-          onClick={handleCompile}
+        <span
+          className={`status-item status-compile${isRunning || isCompiling ? ' disabled' : ''}`}
+          onClick={isRunning || isCompiling ? undefined : handleCompile}
           title="仅编译 (F6)"
-          disabled={isRunning || isCompiling}
+          style={{ cursor: isRunning || isCompiling ? 'not-allowed' : 'pointer' }}
         >
           ▶ 编译
-        </button>
+        </span>
         {isRunning ? (
-          <button className="status-stop-btn" onClick={handleStop} title="停止 (F7)">
+          <span
+            className="status-item status-stop"
+            onClick={handleStop}
+            title="停止 (F7)"
+            style={{ cursor: 'pointer' }}
+          >
             <span className="status-stop-icon">■</span>
             <span>停止</span>
-          </button>
+          </span>
         ) : (
-          <button className="status-run-btn" onClick={handleRun} title="编译并运行 (F5)">
+          <span
+            className="status-item status-run"
+            onClick={handleRun}
+            title="编译并运行 (F5)"
+            style={{ cursor: 'pointer' }}
+          >
             ▷ 运行
-          </button>
+          </span>
         )}
       </div>
     </div>

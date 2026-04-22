@@ -39,7 +39,7 @@ interface IDEState {
   setActiveTab: (path: string) => void;
   updateTabContent: (path: string, content: string) => void;
   markTabSaved: (path: string) => void;
-  setProjectRoot: (root: string) => void;
+  setProjectRoot: (root: string | null) => void;
   setFileTree: (tree: FileEntry[]) => void;
   toggleDir: (path: string) => void;
   appendOutput: (line: string) => void;
