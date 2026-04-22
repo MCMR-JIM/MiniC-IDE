@@ -96,7 +96,7 @@ src-tauri/target/release/bundle/nsis/
 | `Ctrl + F` | 查找 |
 | `Ctrl + H` | 替换 |
 | `Ctrl + B` | 切换侧边栏 |
-| `Ctrl + \`` | 切换输出面板 |
+| ```Ctrl + ` ``` | 切换输出面板 |
 | `Ctrl + 鼠标滚轮` | 编辑器缩放 |
 
 ## 技术栈
