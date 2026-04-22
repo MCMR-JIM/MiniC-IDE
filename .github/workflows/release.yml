@@ -38,11 +38,20 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
           tagName: v__VERSION__
           releaseName: V__VERSION__
-          releaseBody: See the assets to download and install this version.
+          releaseBody: |
+            ## 更新内容
+            - 接入基于 GitHub Releases 的应用内自动更新。
+            - 将更新提示改为非打断式右下角提示，并支持手动检查更新。
+            - 在安装更新前增加运行中程序与未保存文件检查，避免直接打断当前工作。
+            - 修复 Windows 下中文路径导致的编译与运行失败问题。
+
+            ## 说明
+            - 更新包通过 GitHub Releases 分发。
+            - Windows 下安装更新时，应用可能会自动退出，这是安装器的正常行为。
+            - 请从本页面的 Assets 中下载并安装对应版本。
           releaseDraft: false
           prerelease: false
           uploadUpdaterJson: true
