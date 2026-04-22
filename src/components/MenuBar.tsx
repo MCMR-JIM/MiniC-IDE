@@ -58,6 +58,12 @@ const MENUS: MenuDefinition[] = [
       { label: '停止', action: 'run.stop', shortcut: 'F7' },
     ],
   },
+  {
+    label: '帮助',
+    items: [
+      { label: '检查更新...', action: 'help.checkUpdate' },
+    ],
+  },
 ];
 
 const MenuBar: React.FC = () => {

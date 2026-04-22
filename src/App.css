@@ -208,6 +208,117 @@ input:focus, textarea:focus { border-color: #007acc; outline: none; }
   z-index: 9999;
 }
 
+.update-toast {
+  position: fixed;
+  right: 18px;
+  bottom: 34px;
+  width: min(360px, calc(100vw - 36px));
+  background: #252526;
+  border: 1px solid #3f3f46;
+  box-shadow: 0 14px 32px rgba(0, 0, 0, 0.35);
+  color: #d4d4d4;
+  padding: 12px 12px 10px;
+  z-index: 10000;
+}
+
+.update-toast-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.update-toast-title {
+  font-size: 14px;
+  font-weight: 700;
+  color: #f0f0f0;
+}
+
+.update-toast-close {
+  width: 24px;
+  height: 24px;
+  border: 0;
+  background: transparent;
+  color: #b8b8b8;
+  font-size: 18px;
+  line-height: 1;
+}
+
+.update-toast-close:hover {
+  background: #3a3a3a;
+  color: #fff;
+}
+
+.update-toast-meta {
+  margin-top: 2px;
+  color: #9f9f9f;
+  font-size: 12px;
+}
+
+.update-toast-body {
+  margin-top: 8px;
+  color: #d6d6d6;
+  font-size: 13px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+}
+
+.update-toast-progress {
+  margin-top: 10px;
+  height: 4px;
+  background: #1b1b1c;
+  overflow: hidden;
+}
+
+.update-toast-progress-bar {
+  height: 100%;
+  background: #0e639c;
+  transition: width 0.12s ease;
+}
+
+.update-toast-footer {
+  margin-top: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.update-toast-status {
+  margin-right: auto;
+  color: #a8a8a8;
+  font-size: 12px;
+}
+
+.update-toast-btn {
+  min-width: 72px;
+  height: 28px;
+  padding: 0 12px;
+  border: 1px solid #5a5a5a;
+  background: #2f2f2f;
+  color: #e6e6e6;
+}
+
+.update-toast-btn:hover:not(:disabled) {
+  background: #3a3a3a;
+}
+
+.update-toast-btn.primary {
+  background: #0e639c;
+  border-color: #1177bb;
+  color: #fff;
+}
+
+.update-toast-btn.primary:hover:not(:disabled) {
+  background: #1177bb;
+}
+
+.update-toast-btn.muted:disabled {
+  opacity: 0.7;
+  cursor: default;
+}
+
 .ide-drop-overlay {
   position: absolute;
   inset: 2px;

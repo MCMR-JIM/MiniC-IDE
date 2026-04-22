@@ -2,6 +2,7 @@ import React, { useEffect, useCallback, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { message } from '@tauri-apps/plugin-dialog';
+import { check } from '@tauri-apps/plugin-updater';
 import { useIDEStore } from './store/ideStore';
 import MenuBar from './components/MenuBar';
 import FileTree from './components/FileTree';
@@ -26,6 +27,7 @@ type ExitDialogState =
       mode: 'running' | 'unsaved';
       runningCount?: number;
       modifiedCount?: number;
+      actionLabel?: string;
     };
 
 type SwitchProjectDialogState =
@@ -35,8 +37,25 @@ type SwitchProjectDialogState =
       modifiedCount?: number;
     };
 
+type UpdatePromptState =
+  | null
+  | {
+      version: string;
+      currentVersion: string;
+      date?: string;
+      body?: string;
+      downloading: boolean;
+      progress: number | null;
+      progressText: string;
+    };
+
 type DragTarget = 'sidebar' | 'editor' | 'body';
 type DragPosition = { x: number; y: number };
+
+const formatActionLabel = (label: string, withPrefix = false): string => {
+  if (!withPrefix) return label;
+  return /^[\x00-\x7F]+$/.test(label) ? `to ${label}` : `并${label}`;
+};
 
 const normalizePathForCompare = (path: string): string =>
   path.replace(/[\\/]+/g, '/').replace(/\/+$/, '').toLowerCase();
@@ -67,8 +86,11 @@ const App: React.FC = () => {
   const exitDialogResolverRef = useRef<((choice: string) => void) | null>(null);
   const switchProjectResolverRef = useRef<((choice: string) => void) | null>(null);
   const dragSessionRef = useRef(0);
+  const updateCheckInFlightRef = useRef(false);
+  const pendingUpdateRef = useRef<Awaited<ReturnType<typeof check>> | null>(null);
   const [exitDialog, setExitDialog] = useState<ExitDialogState>(null);
   const [switchProjectDialog, setSwitchProjectDialog] = useState<SwitchProjectDialogState>(null);
+  const [updatePrompt, setUpdatePrompt] = useState<UpdatePromptState>(null);
   const [dragTarget, setDragTarget] = useState<DragTarget | null>(null);
   const [dragContent, setDragContent] = useState<'file' | 'folder' | 'mixed' | null>(null);
   const dragContentRef = useRef<'file' | 'folder' | 'mixed' | null>(null);
@@ -104,6 +126,40 @@ const App: React.FC = () => {
     setSwitchProjectDialog(null);
     resolver?.(choice);
   }, []);
+
+  const prepareForAppAction = useCallback(async (actionLabel: string) => {
+    const state = useIDEStore.getState();
+    const modified = state.tabs.filter((t) => t.modified);
+    const running = state.isRunning
+      ? await invoke<number>('running_child_count').catch(() => 0)
+      : 0;
+
+    if (running > 0) {
+      const runChoice = await askExitDialog({ mode: 'running', runningCount: running, actionLabel });
+      if (runChoice !== 'close_running') return false;
+      await invoke('kill_child_processes').catch(() => {});
+    }
+
+    if (modified.length > 0) {
+      const saveChoice = await askExitDialog({ mode: 'unsaved', modifiedCount: modified.length, actionLabel });
+      if (saveChoice === 'cancel_exit') return false;
+      if (saveChoice === 'save_all_exit') {
+        const { markTabSaved } = useIDEStore.getState();
+        for (const t of modified) {
+          try {
+            await invoke('write_file_content', { path: t.path, content: t.content });
+            markTabSaved(t.path);
+          } catch (e) {
+            await message(`保存失败：${String(e)}`, { title: 'MiniC IDE', kind: 'error', buttons: 'Ok' });
+            return false;
+          }
+        }
+      }
+    }
+
+    appendOutput(`[Updater] 已完成${actionLabel}前检查。`);
+    return true;
+  }, [appendOutput, askExitDialog]);
 
   useEffect(() => {
     const onRunningChanged = (e: Event) => {
@@ -166,13 +222,13 @@ const App: React.FC = () => {
           }
 
           if (running > 0) {
-            const runChoice = await askExitDialog({ mode: 'running', runningCount: running });
+            const runChoice = await askExitDialog({ mode: 'running', runningCount: running, actionLabel: '退出' });
             if (runChoice !== 'close_running') return;
             await invoke('kill_child_processes').catch(() => {});
           }
 
           if (modified.length > 0) {
-            const saveChoice = await askExitDialog({ mode: 'unsaved', modifiedCount: modified.length });
+            const saveChoice = await askExitDialog({ mode: 'unsaved', modifiedCount: modified.length, actionLabel: '退出' });
             if (saveChoice === 'cancel_exit') return;
             if (saveChoice === 'save_all_exit') {
               for (const t of modified) {
@@ -352,6 +408,148 @@ const App: React.FC = () => {
     } catch (e) { console.error(e); }
   }, [openFilePath]);
 
+  const clearPendingUpdate = useCallback(async () => {
+    const pending = pendingUpdateRef.current;
+    pendingUpdateRef.current = null;
+    setUpdatePrompt(null);
+    if (pending) {
+      await pending.close().catch(() => {});
+    }
+  }, []);
+
+  const installPendingUpdate = useCallback(async () => {
+    const pending = pendingUpdateRef.current;
+    if (!pending) return;
+
+    const ready = await prepareForAppAction('更新');
+    if (!ready) return;
+
+    setUpdatePrompt((current) => current ? {
+      ...current,
+      downloading: true,
+      progress: null,
+      progressText: '准备下载安装更新...',
+    } : current);
+
+    appendOutput(`[Updater] 正在下载并安装 ${pending.version}...`);
+    let downloaded = 0;
+    let total = 0;
+    let nextReport = 0.25;
+
+    try {
+      await pending.downloadAndInstall((event) => {
+        if (event.event === 'Started') {
+          total = event.data.contentLength ?? 0;
+          const progressText = total > 0
+            ? `正在下载更新（约 ${(total / 1024 / 1024).toFixed(2)} MB）...`
+            : '正在下载更新...';
+          setUpdatePrompt((current) => current ? { ...current, downloading: true, progress: 0, progressText } : current);
+          appendOutput(total > 0
+            ? `[Updater] 开始下载更新，大小约 ${(total / 1024 / 1024).toFixed(2)} MB。`
+            : '[Updater] 开始下载更新。');
+          return;
+        }
+
+        if (event.event === 'Progress') {
+          downloaded += event.data.chunkLength;
+          const progress = total > 0 ? Math.min(1, downloaded / total) : null;
+          const percent = progress === null ? null : Math.min(100, Math.round(progress * 100));
+          setUpdatePrompt((current) => current ? {
+            ...current,
+            downloading: true,
+            progress,
+            progressText: percent === null ? '正在下载安装更新...' : `正在下载安装更新... ${percent}%`,
+          } : current);
+          if (progress !== null && progress >= nextReport) {
+            appendOutput(`[Updater] 下载进度 ${percent}%`);
+            nextReport += 0.25;
+          }
+          return;
+        }
+
+        setUpdatePrompt((current) => current ? {
+          ...current,
+          downloading: true,
+          progress: 1,
+          progressText: '下载完成，正在安装更新...',
+        } : current);
+        appendOutput('[Updater] 下载完成，正在安装更新...');
+      });
+
+      appendOutput('[Updater] 更新已安装。若应用未自动退出，请手动重启。');
+      setUpdatePrompt((current) => current ? {
+        ...current,
+        downloading: false,
+        progress: 1,
+        progressText: '更新已安装。若应用未自动退出，请手动重启。',
+      } : current);
+      pendingUpdateRef.current = null;
+      await pending.close().catch(() => {});
+    } catch (e) {
+      const errorText = `更新失败：${String(e)}`;
+      appendOutput(`[Updater] ${errorText}`);
+      setUpdatePrompt((current) => current ? {
+        ...current,
+        downloading: false,
+        progress: null,
+        progressText: errorText,
+      } : current);
+      await message(errorText, { title: 'MiniC IDE', kind: 'error', buttons: 'Ok' });
+    }
+  }, [appendOutput, prepareForAppAction]);
+
+  const checkForUpdates = useCallback(async (manual: boolean) => {
+    if (!isTauriRuntime()) return;
+    if (import.meta.env.DEV) {
+      if (manual) {
+        await message('开发模式下不检查更新。', { title: 'MiniC IDE', kind: 'info', buttons: 'Ok' });
+      }
+      return;
+    }
+    if (updateCheckInFlightRef.current) {
+      if (manual) {
+        await message('正在检查更新，请稍候。', { title: 'MiniC IDE', kind: 'info', buttons: 'Ok' });
+      }
+      return;
+    }
+
+    updateCheckInFlightRef.current = true;
+    try {
+      if (manual) appendOutput('[Updater] 正在检查更新...');
+      const update = await check();
+      if (!update) {
+        if (manual) {
+          appendOutput('[Updater] 当前已是最新版本。');
+          await message('当前已是最新版本。', { title: 'MiniC IDE', kind: 'info', buttons: 'Ok' });
+        }
+        return;
+      }
+
+      if (pendingUpdateRef.current) {
+        await pendingUpdateRef.current.close().catch(() => {});
+      }
+      pendingUpdateRef.current = update;
+      appendOutput(`[Updater] 发现新版本 ${update.version}。`);
+      setUpdatePrompt({
+        version: update.version,
+        currentVersion: update.currentVersion,
+        date: update.date,
+        body: update.body,
+        downloading: false,
+        progress: null,
+        progressText: manual ? '已发现更新，可立即安装。' : '后台已检测到新版本。',
+      });
+    } catch (e) {
+      const errorText = `检查更新失败：${String(e)}`;
+      appendOutput(`[Updater] ${errorText}`);
+      if (manual) {
+        await message(errorText, { title: 'MiniC IDE', kind: 'error', buttons: 'Ok' });
+      }
+    } finally {
+      updateCheckInFlightRef.current = false;
+    }
+  }, [appendOutput]);
+
   const triggerFileTreeInline = useCallback((
     mode: 'newFile' | 'newFolder' | 'rename',
     context?: Record<string, unknown>,
@@ -379,6 +577,7 @@ const App: React.FC = () => {
       else if (action === 'run.compile') handleCompile();
       else if (action === 'run.run') handleRun();
       else if (action === 'run.stop') handleStop();
+      else if (action === 'help.checkUpdate') await checkForUpdates(true);
       else if (action === 'edit.find') setFindVisible(true);
       else if (action === 'edit.replace') setFindVisible(true);
       else if (action === 'find.close') setFindVisible(false);
@@ -438,7 +637,25 @@ const App: React.FC = () => {
       document.removeEventListener('menu-action', handler);
       document.removeEventListener('context-menu-action', handler);
     };
-  }, [activeTabPath, tabs, projectRoot, handleCompile, handleRun, handleStop, handleSave, handleOpenFile, handleOpenFolder, closeTab, toggleSidebar, toggleOutput, setFindVisible, refreshFileTree, triggerFileTreeInline, openFilePath]);
+  }, [activeTabPath, tabs, projectRoot, handleCompile, handleRun, handleStop, handleSave, handleOpenFile, handleOpenFolder, closeTab, toggleSidebar, toggleOutput, setFindVisible, refreshFileTree, triggerFileTreeInline, openFilePath, checkForUpdates]);
+
+  useEffect(() => {
+    if (!isTauriRuntime() || import.meta.env.DEV) return;
+    const timer = window.setTimeout(() => {
+      void checkForUpdates(false);
+    }, 1800);
+    return () => window.clearTimeout(timer);
+  }, [checkForUpdates]);
+
+  useEffect(() => {
+    return () => {
+      const pending = pendingUpdateRef.current;
+      pendingUpdateRef.current = null;
+      if (pending) {
+        void pending.close().catch(() => {});
+      }
+    };
+  }, []);
 
   useEffect(() => {
     if (!isTauriRuntime()) return;
@@ -715,11 +932,11 @@ const App: React.FC = () => {
                 <div className="exit-modal-body">
                   当前有 {exitDialog.runningCount ?? 0} 个运行中的程序。
                   <br />
-                  请选择是否关闭程序并退出。
+                  请选择是否关闭程序{formatActionLabel(exitDialog.actionLabel ?? '退出', true)}。
                 </div>
                 <div className="exit-modal-actions">
-                  <button className="exit-modal-btn danger" onClick={() => resolveExitDialog('close_running')}>关闭程序并退出</button>
-                  <button className="exit-modal-btn" onClick={() => resolveExitDialog('cancel_close')}>取消关闭</button>
+                  <button className="exit-modal-btn danger" onClick={() => resolveExitDialog('close_running')}>关闭程序{formatActionLabel(exitDialog.actionLabel ?? '退出', true)}</button>
+                  <button className="exit-modal-btn" onClick={() => resolveExitDialog('cancel_close')}>取消</button>
                 </div>
               </>
             ) : (
@@ -728,18 +945,18 @@ const App: React.FC = () => {
                 <div className="exit-modal-body">
                   当前有 {exitDialog.modifiedCount ?? 0} 个文件未保存。
                   <br />
-                  请选择退出方式。
+                  请选择{exitDialog.actionLabel ?? '退出'}方式。
                 </div>
                 <div className="exit-modal-actions">
-                  <button className="exit-modal-btn primary" onClick={() => resolveExitDialog('save_all_exit')}>全部保存并退出</button>
-                  <button className="exit-modal-btn warning" onClick={() => resolveExitDialog('no_save_exit')}>不保存并退出</button>
-                  <button className="exit-modal-btn" onClick={() => resolveExitDialog('cancel_exit')}>取消退出</button>
+                  <button className="exit-modal-btn primary" onClick={() => resolveExitDialog('save_all_exit')}>全部保存并{exitDialog.actionLabel ?? '退出'}</button>
+                  <button className="exit-modal-btn warning" onClick={() => resolveExitDialog('no_save_exit')}>不保存并{exitDialog.actionLabel ?? '退出'}</button>
+                  <button className="exit-modal-btn" onClick={() => resolveExitDialog('cancel_exit')}>取消</button>
                 </div>
                </>
-             )}
-           </div>
-         </div>
-       )}
+              )}
+            </div>
+          </div>
+        )}
        {switchProjectDialog && (
          <div className="exit-modal-backdrop">
            <div className="exit-modal">
@@ -758,8 +975,36 @@ const App: React.FC = () => {
                <button className="exit-modal-btn" onClick={() => resolveSwitchProjectDialog('cancel_switch')}>取消切换</button>
              </div>
            </div>
-         </div>
-       )}
+          </div>
+        )}
+        {updatePrompt && (
+          <div className="update-toast" role="status" aria-live="polite">
+            <div className="update-toast-header">
+              <div className="update-toast-title">发现新版本 {updatePrompt.version}</div>
+              {!updatePrompt.downloading && (
+                <button className="update-toast-close" onClick={() => void clearPendingUpdate()} title="稍后再说">×</button>
+              )}
+            </div>
+            <div className="update-toast-meta">当前版本 {updatePrompt.currentVersion}{updatePrompt.date ? ` · ${new Date(updatePrompt.date).toLocaleDateString()}` : ''}</div>
+            <div className="update-toast-body">{updatePrompt.body?.trim() || updatePrompt.progressText}</div>
+            {updatePrompt.downloading && updatePrompt.progress !== null && (
+              <div className="update-toast-progress">
+                <div className="update-toast-progress-bar" style={{ width: `${Math.max(8, Math.round(updatePrompt.progress * 100))}%` }} />
+              </div>
+            )}
+            <div className="update-toast-footer">
+              <div className="update-toast-status">{updatePrompt.progressText}</div>
+              {updatePrompt.downloading ? (
+                <button className="update-toast-btn muted" disabled>下载中</button>
+              ) : (
+                <>
+                  <button className="update-toast-btn muted" onClick={() => void clearPendingUpdate()}>稍后</button>
+                  <button className="update-toast-btn primary" onClick={() => void installPendingUpdate()}>更新</button>
+                </>
+              )}
+            </div>
+          </div>
+        )}
        <StatusBar />
        <ContextMenu />
      </div>

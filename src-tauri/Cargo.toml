@@ -30,6 +30,9 @@ portable-pty = "0.8"
 chardetng = "1.0.0"
 base64 = "0.22"
 
+[target.'cfg(any(target_os = "macos", windows, target_os = "linux"))'.dependencies]
+tauri-plugin-updater = "2.10.1"
+
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.59", features = [
   "Win32_Foundation",
