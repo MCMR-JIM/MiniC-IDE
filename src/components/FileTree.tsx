@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { useIDEStore } from '../store/ideStore';
-import { FileEntry } from '../types';
+import { FileEntry, FileIdentity } from '../types';
 import { invoke } from '@tauri-apps/api/core';
 import { getFileIconComponent } from './FileIcons';
 import { getEditorLanguageFromFileName } from '../utils/language';
@@ -112,8 +112,11 @@ const FileNode: React.FC<{
         return;
       }
       try {
-        const content = await invoke<string>('read_file_content', { path: entry.path });
-        openTab({ path: entry.path, name: entry.name, content, modified: false, language: getEditorLanguageFromFileName(entry.name) });
+        const [content, fileIdentity] = await Promise.all([
+          invoke<string>('read_file_content', { path: entry.path }),
+          invoke<FileIdentity | null>('get_file_identity', { path: entry.path }),
+        ]);
+        openTab({ path: entry.path, name: entry.name, content, modified: false, language: getEditorLanguageFromFileName(entry.name), fileIdentity });
       } catch (e: unknown) {
         const msg = typeof e === 'string' ? e : String(e);
         openTab({ path: entry.path, name: entry.name, content: msg, modified: false, language: 'plaintext' });
@@ -218,6 +221,7 @@ const FileTree: React.FC = () => {
     toggleDir,
     openTab,
     appendOutput,
+    remapPathReferences,
   } = useIDEStore();
   const [inlineState, setInlineState] = useState<InlineEditState | null>(null);
   const [inlineName, setInlineName] = useState('');
@@ -249,16 +253,19 @@ const FileTree: React.FC = () => {
         const newPath = joinPath(inlineState.parentPath, name);
         if (newPath !== inlineState.targetPath) {
           await invoke('rename_path', { oldPath: inlineState.targetPath, newPath });
+          remapPathReferences(inlineState.targetPath, newPath, Boolean(inlineState.isDir));
         }
       } else if (inlineState.mode === 'newFile') {
         const filePath = joinPath(inlineState.parentPath, name);
         await invoke('create_file', { path: filePath });
+        const fileIdentity = await invoke<FileIdentity | null>('get_file_identity', { path: filePath }).catch(() => null);
         openTab({
           path: filePath,
           name,
           content: '',
           modified: false,
           language: getEditorLanguageFromFileName(name),
+          fileIdentity,
         });
       } else if (inlineState.mode === 'newFolder') {
         const dirPath = joinPath(inlineState.parentPath, name);
@@ -271,7 +278,7 @@ const FileTree: React.FC = () => {
       appendOutput(`Error: ${String(e)}`);
       cancelInline();
     }
-  }, [appendOutput, cancelInline, inlineName, inlineState, openTab, projectRoot]);
+  }, [appendOutput, cancelInline, inlineName, inlineState, openTab, projectRoot, remapPathReferences]);
 
   const startInline = useCallback((detail: InlineActionDetail) => {
     if (!projectRoot) return;
@@ -339,6 +346,8 @@ const FileTree: React.FC = () => {
     (inlineState?.mode === 'newFile' || inlineState?.mode === 'newFolder') &&
     inlineState.parentPath === projectRoot;
 
+  const showEmptyState = fileTree.length === 0 && !showRootInline;
+
   return (
     <div className="file-tree" onContextMenu={handleRootContextMenu}>
       {projectRoot && (
@@ -346,9 +355,9 @@ const FileTree: React.FC = () => {
           {rootDisplayName}
         </div>
       )}
-      {fileTree.length === 0 && (
+      {showEmptyState && (
         <div className="file-tree-empty">
-          <p>未打开文件夹</p>
+          <p>{projectRoot ? '空文件夹' : '未打开文件夹'}</p>
         </div>
       )}
       {showRootInline && inlineState && (

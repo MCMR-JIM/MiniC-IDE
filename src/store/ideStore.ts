@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import { TabFile, FileEntry, CompileResult, ContextMenuState } from '../types';
+import { TabFile, FileEntry, CompileResult, ContextMenuState, FileIdentity } from '../types';
 
 interface IDEState {
   // Tabs
@@ -39,6 +39,8 @@ interface IDEState {
   setActiveTab: (path: string) => void;
   updateTabContent: (path: string, content: string) => void;
   markTabSaved: (path: string) => void;
+  remapPathReferences: (oldPath: string, newPath: string, isDir: boolean) => void;
+  setTabFileIdentity: (path: string, fileIdentity: FileIdentity | null) => void;
   setProjectRoot: (root: string | null) => void;
   setFileTree: (tree: FileEntry[]) => void;
   toggleDir: (path: string) => void;
@@ -60,6 +62,27 @@ interface IDEState {
   setFindMatchCase: (v: boolean) => void;
   setFindRegex: (v: boolean) => void;
 }
+
+const normalizePathForCompare = (path: string): string =>
+  path.replace(/[\\/]+/g, '/').replace(/\/+$/, '').toLowerCase();
+
+const remapPath = (path: string | null, oldPath: string, newPath: string, isDir: boolean): string | null => {
+  if (!path) return path;
+  if (!isDir) return path === oldPath ? newPath : path;
+
+  const normalizedPath = normalizePathForCompare(path);
+  const normalizedOldPath = normalizePathForCompare(oldPath);
+  if (normalizedPath !== normalizedOldPath && !normalizedPath.startsWith(`${normalizedOldPath}/`)) {
+    return path;
+  }
+
+  return `${newPath}${path.slice(oldPath.length)}`;
+};
+
+const getBaseName = (path: string): string => {
+  const parts = path.split(/[\\/]/);
+  return parts[parts.length - 1] || path;
+};
 
 export const useIDEStore = create<IDEState>((set) => ({
   tabs: [],
@@ -114,6 +137,37 @@ export const useIDEStore = create<IDEState>((set) => ({
     tabs: state.tabs.map(t =>
       t.path === path ? { ...t, modified: false } : t
     )
+  })),
+
+  remapPathReferences: (oldPath, newPath, isDir) => set((state) => {
+    const tabs = state.tabs.map((tab) => {
+      const nextPath = remapPath(tab.path, oldPath, newPath, isDir);
+      if (nextPath === tab.path) return tab;
+      return {
+        ...tab,
+        path: nextPath ?? tab.path,
+        name: getBaseName(nextPath ?? tab.path),
+      };
+    });
+
+    const expandedDirs = new Set<string>();
+    state.expandedDirs.forEach((path) => {
+      expandedDirs.add(remapPath(path, oldPath, newPath, isDir) ?? path);
+    });
+
+    return {
+      tabs,
+      activeTabPath: remapPath(state.activeTabPath, oldPath, newPath, isDir),
+      runningFilePath: remapPath(state.runningFilePath, oldPath, newPath, isDir),
+      projectRoot: remapPath(state.projectRoot, oldPath, newPath, isDir),
+      expandedDirs,
+    };
+  }),
+
+  setTabFileIdentity: (path, fileIdentity) => set((state) => ({
+    tabs: state.tabs.map((t) =>
+      t.path === path ? { ...t, fileIdentity } : t,
+    ),
   })),
 
   setProjectRoot: (root) => set({ projectRoot: root }),
