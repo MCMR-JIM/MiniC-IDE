@@ -11,7 +11,7 @@ import EditorPane from './components/EditorPane';
 import OutputPanel from './components/OutputPanel';
 import StatusBar from './components/StatusBar';
 import ContextMenu from './components/ContextMenu';
-import { CompileResult } from './types';
+import { CompileResult, FileIdentity, TabFile } from './types';
 import { isTauriRuntime } from './tauriEnv';
 import { getEditorLanguageFromFileName, isCompilableSourceFileName, isHeaderFileName } from './utils/language';
 import './App.css';
@@ -66,6 +66,14 @@ const isPathInsideRoot = (path: string, root: string): boolean => {
   return normalizedPath === normalizedRoot || normalizedPath.startsWith(`${normalizedRoot}/`);
 };
 
+const joinPath = (parent: string, name: string): string => {
+  const trimmed = name.trim();
+  if (!parent) return trimmed;
+  const sep = parent.includes('\\') || /^[A-Za-z]:$/.test(parent) ? '\\' : '/';
+  if (parent.endsWith('\\') || parent.endsWith('/')) return `${parent}${trimmed}`;
+  return `${parent}${sep}${trimmed}`;
+};
+
 const App: React.FC = () => {
   const {
     tabs, activeTabPath, closeTab, openTab,
@@ -73,7 +81,7 @@ const App: React.FC = () => {
     appendOutput, clearOutput, setCompileResult, setIsCompiling,
     sidebarWidth, setSidebarWidth, outputHeight, setOutputHeight,
     sidebarVisible, toggleSidebar, outputVisible, toggleOutput, setOutputVisible,
-    markTabSaved, setFindVisible, setIsRunning, setRunningFilePath,
+    markTabSaved, remapPathReferences, setFindVisible, setIsRunning, setRunningFilePath, setTabFileIdentity,
   } = useIDEStore();
 
   const sidebarDragging = useRef(false);
@@ -280,16 +288,41 @@ const App: React.FC = () => {
     await refreshFileTree(root);
   }, [refreshFileTree, setProjectRoot]);
 
+  const resolveTrackedTabPath = useCallback(async (tab: TabFile): Promise<string | null> => {
+    if (!tab.fileIdentity) return tab.path;
+    try {
+      const resolvedPath = await invoke<string | null>('resolve_file_path_by_identity', { identity: tab.fileIdentity });
+      if (!resolvedPath) return null;
+      if (resolvedPath !== tab.path) {
+        remapPathReferences(tab.path, resolvedPath, false);
+      }
+      return resolvedPath;
+    } catch {
+      return tab.path;
+    }
+  }, [remapPathReferences]);
+
+  const reconcileOpenTabs = useCallback(async () => {
+    const currentTabs = useIDEStore.getState().tabs;
+    for (const tab of currentTabs) {
+      if (!tab.fileIdentity) continue;
+      await resolveTrackedTabPath(tab);
+    }
+  }, [resolveTrackedTabPath]);
+
   const openFilePath = useCallback(async (selected: string) => {
     try {
       const name = selected.split(/[\\/]/).pop() ?? selected;
-      const content = await invoke<string>('read_file_content', { path: selected });
+      const [content, fileIdentity] = await Promise.all([
+        invoke<string>('read_file_content', { path: selected }),
+        invoke<FileIdentity | null>('get_file_identity', { path: selected }),
+      ]);
       const lang = getEditorLanguageFromFileName(name);
       if (projectRoot && !isPathInsideRoot(selected, projectRoot)) {
         setProjectRoot(null);
         setFileTree([]);
       }
-      openTab({ path: selected, name, content, modified: false, language: lang });
+      openTab({ path: selected, name, content, modified: false, language: lang, fileIdentity });
       return true;
     } catch (e) {
       await message(`打开文件失败：${String(e)}`, { title: 'MiniC IDE', kind: 'error', buttons: 'Ok' });
@@ -298,14 +331,19 @@ const App: React.FC = () => {
   }, [openTab, projectRoot, setFileTree, setProjectRoot]);
 
   const handleCompile = useCallback(async (): Promise<CompileResult | null> => {
-    const path = activeTabPath;
+    const initialPath = activeTabPath;
     setCompileResult(null);
-    if (!path) {
+    if (!initialPath) {
       appendOutput('No file open to compile.');
       return null;
     }
-    const tab = useIDEStore.getState().tabs.find(t => t.path === path);
+    const tab = useIDEStore.getState().tabs.find(t => t.path === initialPath);
     if (!tab) return null;
+    const path = await resolveTrackedTabPath(tab);
+    if (!path) {
+      appendOutput('Error: 当前文件已被外部重命名或移动，无法继续编译。请重新保存或重新打开该文件。');
+      return null;
+    }
     setOutputVisible(true);
     document.dispatchEvent(new CustomEvent('switch-output-tab', { detail: { tab: 'output' } }));
     clearOutput();
@@ -329,6 +367,9 @@ const App: React.FC = () => {
       if (tab.modified) {
         await invoke('write_file_content', { path, content: tab.content });
         markTabSaved(path);
+        if (path !== initialPath) {
+          setTabFileIdentity(path, await invoke<FileIdentity | null>('get_file_identity', { path }));
+        }
       }
       const result = await invoke<CompileResult>('compile_file', { filePath: path, outputPath: null });
       setCompileResult(result);
@@ -351,12 +392,12 @@ const App: React.FC = () => {
       setIsCompiling(false);
       fixEditorLayoutAfter();
     }
-  }, [activeTabPath, appendOutput, clearOutput, setCompileResult, setIsCompiling, markTabSaved, fixEditorLayoutAfter, setOutputVisible]);
+  }, [activeTabPath, appendOutput, clearOutput, setCompileResult, setIsCompiling, markTabSaved, fixEditorLayoutAfter, setOutputVisible, resolveTrackedTabPath, setTabFileIdentity]);
 
   const handleRun = useCallback(async () => {
     const compileResult = await handleCompile();
     if (!compileResult?.success) return;
-    const path = activeTabPath;
+    const path = useIDEStore.getState().activeTabPath;
     if (!path) return;
     const exePath = path.replace(/\.[^\\/]+$/, '.exe');
     const cwd = path.includes('\\') ? path.replace(/\\[^\\]+$/, '') : path.replace(/\/[^\/]+$/, '');
@@ -368,7 +409,7 @@ const App: React.FC = () => {
       fixEditorLayoutAfter();
     }, 100);
     setTimeout(fixEditorLayoutAfter, 300);
-  }, [handleCompile, activeTabPath, fixEditorLayoutAfter, setOutputVisible]);
+  }, [handleCompile, fixEditorLayoutAfter, setOutputVisible]);
 
   const handleStop = useCallback(() => {
     setOutputVisible(true);
@@ -378,17 +419,26 @@ const App: React.FC = () => {
   }, [fixEditorLayoutAfter, setOutputVisible]);
 
   const handleSave = useCallback(async () => {
-    const path = activeTabPath;
-    const tab = useIDEStore.getState().tabs.find(t => t.path === path);
-    if (!path || !tab) return;
+    const initialPath = activeTabPath;
+    const tab = useIDEStore.getState().tabs.find(t => t.path === initialPath);
+    if (!initialPath || !tab) return;
     try {
-      await invoke('write_file_content', { path, content: tab.content });
-      markTabSaved(path);
-      appendOutput(`Saved: ${path}`);
+      const resolvedPath = await resolveTrackedTabPath(tab);
+      let savePath = resolvedPath;
+      if (!savePath) {
+        savePath = await invoke<string | null>('save_file_dialog', { defaultName: tab.name });
+        if (!savePath) return;
+        remapPathReferences(initialPath, savePath, false);
+      }
+      await invoke('write_file_content', { path: savePath, content: tab.content });
+      const nextIdentity = await invoke<FileIdentity | null>('get_file_identity', { path: savePath });
+      setTabFileIdentity(savePath, nextIdentity);
+      markTabSaved(savePath);
+      appendOutput(`Saved: ${savePath}`);
     } catch (e) {
       appendOutput(`Save error: ${e}`);
     }
-  }, [activeTabPath, markTabSaved, appendOutput]);
+  }, [activeTabPath, markTabSaved, appendOutput, remapPathReferences, resolveTrackedTabPath, setTabFileIdentity]);
 
   const handleOpenFolder = useCallback(async () => {
     try {
@@ -407,6 +457,36 @@ const App: React.FC = () => {
       }
     } catch (e) { console.error(e); }
   }, [openFilePath]);
+
+  const handleCreateStandaloneFile = useCallback(async () => {
+    try {
+      const selected = await invoke<string | null>('save_file_dialog', { defaultName: 'untitled.c' });
+      if (!selected) return;
+      const exists = await invoke<{ is_file: boolean }>('get_file_info', { path: selected })
+        .then((info) => Boolean(info?.is_file))
+        .catch(() => false);
+      if (!exists) {
+        await invoke('create_file', { path: selected });
+      }
+      await openFilePath(selected);
+    } catch (e) {
+      await message(`新建文件失败：${String(e)}`, { title: 'MiniC IDE', kind: 'error', buttons: 'Ok' });
+    }
+  }, [openFilePath]);
+
+  const handleCreateWorkspaceFolder = useCallback(async () => {
+    try {
+      const parent = await invoke<string | null>('open_folder_dialog');
+      if (!parent) return;
+      const folderName = window.prompt('输入新文件夹名称', 'NewFolder')?.trim();
+      if (!folderName) return;
+      const folderPath = joinPath(parent, folderName);
+      await invoke('create_directory', { path: folderPath });
+      await openFolderPath(folderPath);
+    } catch (e) {
+      await message(`新建文件夹失败：${String(e)}`, { title: 'MiniC IDE', kind: 'error', buttons: 'Ok' });
+    }
+  }, [openFolderPath]);
 
   const clearPendingUpdate = useCallback(async () => {
     const pending = pendingUpdateRef.current;
@@ -562,10 +642,12 @@ const App: React.FC = () => {
       const action = (e as CustomEvent).detail?.action as string;
       if (!action) return;
       if (action === 'file.new') {
-        triggerFileTreeInline('newFile', { path: projectRoot ?? '', is_dir: true, name: '' });
+        if (projectRoot) triggerFileTreeInline('newFile', { path: projectRoot, is_dir: true, name: '' });
+        else await handleCreateStandaloneFile();
       }
       else if (action === 'file.newFolder') {
-        triggerFileTreeInline('newFolder', { path: projectRoot ?? '', is_dir: true, name: '' });
+        if (projectRoot) triggerFileTreeInline('newFolder', { path: projectRoot, is_dir: true, name: '' });
+        else await handleCreateWorkspaceFolder();
       }
       else if (action === 'file.open') handleOpenFile();
       else if (action === 'file.openFolder') handleOpenFolder();
@@ -581,14 +663,19 @@ const App: React.FC = () => {
       else if (action === 'edit.find') setFindVisible(true);
       else if (action === 'edit.replace') setFindVisible(true);
       else if (action === 'find.close') setFindVisible(false);
-      else if (action === 'tree.refresh') { if (projectRoot) await refreshFileTree(projectRoot); }
+      else if (action === 'tree.refresh') {
+        const root = useIDEStore.getState().projectRoot;
+        if (root) await refreshFileTree(root);
+      }
       else if (action === 'tree.newFile') {
         const ctx = (e as CustomEvent).detail?.context;
-        triggerFileTreeInline('newFile', ctx as Record<string, unknown> | undefined);
+        if (projectRoot) triggerFileTreeInline('newFile', ctx as Record<string, unknown> | undefined);
+        else await handleCreateStandaloneFile();
       }
       else if (action === 'tree.newFolder') {
         const ctx = (e as CustomEvent).detail?.context;
-        triggerFileTreeInline('newFolder', ctx as Record<string, unknown> | undefined);
+        if (projectRoot) triggerFileTreeInline('newFolder', ctx as Record<string, unknown> | undefined);
+        else await handleCreateWorkspaceFolder();
       }
       else if (action === 'tree.open') {
         const ctx = (e as CustomEvent).detail?.context;
@@ -637,7 +724,7 @@ const App: React.FC = () => {
       document.removeEventListener('menu-action', handler);
       document.removeEventListener('context-menu-action', handler);
     };
-  }, [activeTabPath, tabs, projectRoot, handleCompile, handleRun, handleStop, handleSave, handleOpenFile, handleOpenFolder, closeTab, toggleSidebar, toggleOutput, setFindVisible, refreshFileTree, triggerFileTreeInline, openFilePath, checkForUpdates]);
+  }, [activeTabPath, tabs, projectRoot, handleCompile, handleRun, handleStop, handleSave, handleOpenFile, handleOpenFolder, closeTab, toggleSidebar, toggleOutput, setFindVisible, refreshFileTree, triggerFileTreeInline, openFilePath, checkForUpdates, handleCreateStandaloneFile, handleCreateWorkspaceFolder]);
 
   useEffect(() => {
     if (!isTauriRuntime() || import.meta.env.DEV) return;
@@ -646,6 +733,22 @@ const App: React.FC = () => {
     }, 1800);
     return () => window.clearTimeout(timer);
   }, [checkForUpdates]);
+
+  useEffect(() => {
+    const onFocus = () => {
+      void reconcileOpenTabs();
+      const root = useIDEStore.getState().projectRoot;
+      if (root) {
+        void refreshFileTree(root);
+      }
+    };
+    window.addEventListener('focus', onFocus);
+    document.addEventListener('visibilitychange', onFocus);
+    return () => {
+      window.removeEventListener('focus', onFocus);
+      document.removeEventListener('visibilitychange', onFocus);
+    };
+  }, [reconcileOpenTabs, refreshFileTree]);
 
   useEffect(() => {
     return () => {
@@ -827,7 +930,8 @@ const App: React.FC = () => {
       else if ((e.ctrlKey || e.metaKey) && e.key === 'o') { e.preventDefault(); handleOpenFile(); }
       else if ((e.ctrlKey || e.metaKey) && e.key === 'n') {
         e.preventDefault();
-        triggerFileTreeInline('newFile', { path: projectRoot ?? '', is_dir: true, name: '' });
+        if (projectRoot) triggerFileTreeInline('newFile', { path: projectRoot, is_dir: true, name: '' });
+        else void handleCreateStandaloneFile();
       }
       else if ((e.ctrlKey || e.metaKey) && e.key === 'w') { e.preventDefault(); if (activeTabPath) closeTab(activeTabPath); }
       else if ((e.ctrlKey || e.metaKey) && e.key === 'b') { e.preventDefault(); toggleSidebar(); }
@@ -840,7 +944,7 @@ const App: React.FC = () => {
     };
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
-  }, [activeTabPath, handleSave, handleOpenFile, closeTab, toggleSidebar, toggleOutput, handleCompile, handleRun, handleStop, setFindVisible, triggerFileTreeInline, projectRoot]);
+  }, [activeTabPath, handleSave, handleOpenFile, closeTab, toggleSidebar, toggleOutput, handleCompile, handleRun, handleStop, setFindVisible, triggerFileTreeInline, projectRoot, handleCreateStandaloneFile]);
 
   const onSidebarMouseDown = (e: React.MouseEvent) => {
     e.preventDefault();

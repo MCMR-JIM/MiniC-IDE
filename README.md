@@ -2,7 +2,7 @@
   <h1>MiniC IDE</h1>
   <p>面向 C / C++ 教学与练习场景的轻量桌面 IDE</p>
   <p>
-    <img alt="version" src="https://img.shields.io/badge/version-1.1.1-0e639c">
+    <img alt="version" src="https://img.shields.io/badge/version-1.2.0-0e639c">
     <img alt="platform" src="https://img.shields.io/badge/platform-Windows-0078d4">
     <img alt="tauri" src="https://img.shields.io/badge/Tauri-2.x-24c8db">
     <img alt="react" src="https://img.shields.io/badge/React-19-61dafb">
@@ -71,6 +71,14 @@ Windows NSIS 安装包默认输出目录：
 ```text
 src-tauri/target/release/bundle/nsis/
 ```
+
+发布前提：
+
+- 安装包会内置 `src-tauri/resources/mingw/` 下的便携 GCC / MinGW。
+- 该目录中的实际工具链文件被 `.gitignore` 排除，不会随仓库进入 GitHub Actions。
+- 如果没有先把正确的 MinGW 内容放进该目录，打出的安装包就是不完整的，不能作为正式 release 发布。
+- 当前正式发版方式为本地构建后使用 `gh release` 上传，不再依赖 GitHub Actions 自动发布。
+- 本地发布脚本见 [docs/release-local.md](./docs/release-local.md) 与 [scripts/release-local.ps1](./scripts/release-local.ps1)。
 
 ## 自动更新
 

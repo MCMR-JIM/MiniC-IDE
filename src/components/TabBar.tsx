@@ -1,14 +1,23 @@
 import React from 'react';
 import { useIDEStore } from '../store/ideStore';
 import { invoke } from '@tauri-apps/api/core';
+import { FileIdentity } from '../types';
 import './TabBar.css';
 
 const TabBar: React.FC = () => {
-  const { tabs, activeTabPath, setActiveTab, closeTab, showContextMenu } = useIDEStore();
+  const { tabs, activeTabPath, setActiveTab, closeTab, showContextMenu, remapPathReferences, setTabFileIdentity } = useIDEStore();
+
+  const resolveTrackedPath = async (path: string, fileIdentity?: FileIdentity | null): Promise<string | null> => {
+    if (!fileIdentity) return path;
+    const resolved = await invoke<string | null>('resolve_file_path_by_identity', { identity: fileIdentity }).catch(() => path);
+    if (!resolved) return null;
+    if (resolved !== path) remapPathReferences(path, resolved, false);
+    return resolved;
+  };
 
   const handleTabClick = (path: string) => setActiveTab(path);
 
-  const handleTabClose = (e: React.MouseEvent, path: string) => {
+  const handleTabClose = async (e: React.MouseEvent, path: string) => {
     e.stopPropagation();
     const tab = useIDEStore.getState().tabs.find(t => t.path === path);
     if (tab?.modified) {
@@ -16,9 +25,18 @@ const TabBar: React.FC = () => {
         closeTab(path);
         return;
       }
-      invoke('write_file_content', { path, content: tab.content }).then(() => closeTab(path));
+      const savePath = await resolveTrackedPath(path, tab.fileIdentity);
+      if (!savePath) {
+        closeTab(path);
+        return;
+      }
+      await invoke('write_file_content', { path: savePath, content: tab.content });
+      const nextIdentity = await invoke<FileIdentity | null>('get_file_identity', { path: savePath }).catch(() => null);
+      setTabFileIdentity(savePath, nextIdentity);
+      closeTab(savePath);
     } else {
-      closeTab(path);
+      const resolvedPath = tab ? await resolveTrackedPath(path, tab.fileIdentity) : path;
+      closeTab(resolvedPath ?? path);
     }
   };
 

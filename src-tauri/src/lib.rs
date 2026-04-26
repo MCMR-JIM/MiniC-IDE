@@ -1,5 +1,6 @@
 use base64::Engine;
 use std::collections::HashSet;
+use std::fs::File;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -124,6 +125,13 @@ pub struct FileEntry {
 pub struct InspectedPath {
     pub path: String,
     pub is_dir: bool,
+}
+
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+pub struct FileIdentity {
+    pub volume_path: String,
+    pub volume_serial_number: u32,
+    pub file_id: String,
 }
 
 #[derive(Clone, Copy)]
@@ -395,6 +403,165 @@ fn detect_source_encoding(path: Option<&str>) -> &'static Encoding {
     let Some(p) = path else { return GBK; };
     let Ok(bytes) = std::fs::read(p) else { return GBK; };
     detect_buffer_encoding(&bytes)
+}
+
+#[cfg(windows)]
+fn path_to_utf16(path: &str) -> Vec<u16> {
+    use std::os::windows::ffi::OsStrExt;
+    std::ffi::OsStr::new(path).encode_wide().chain(Some(0)).collect()
+}
+
+#[cfg(windows)]
+fn windows_volume_path(path: &Path) -> Option<String> {
+    let path_str = path.to_string_lossy();
+    let bytes = path_str.as_bytes();
+    if bytes.len() >= 2 && bytes[1] == b':' {
+        return Some(format!(r"\\.\{}", &path_str[..2]));
+    }
+    None
+}
+
+#[cfg(windows)]
+fn normalize_windows_final_path(path: String) -> String {
+    if let Some(rest) = path.strip_prefix(r"\\?\UNC\") {
+        return format!(r"\\{}", rest);
+    }
+    if let Some(rest) = path.strip_prefix(r"\\?\") {
+        return rest.to_string();
+    }
+    path
+}
+
+#[cfg(windows)]
+fn get_windows_file_identity(path: &str) -> Result<Option<FileIdentity>, String> {
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Storage::FileSystem::{
+        GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION,
+    };
+
+    let metadata = std::fs::metadata(path).map_err(|e| format!("无法读取文件信息: {}", e))?;
+    if !metadata.is_file() {
+        return Ok(None);
+    }
+
+    let file = File::open(path).map_err(|e| format!("无法打开文件: {}", e))?;
+    let mut info: BY_HANDLE_FILE_INFORMATION = unsafe { std::mem::zeroed() };
+    let ok = unsafe { GetFileInformationByHandle(file.as_raw_handle() as _, &mut info) };
+    if ok == 0 {
+        return Err(std::io::Error::last_os_error().to_string());
+    }
+
+    let file_id = ((info.nFileIndexHigh as u64) << 32) | (info.nFileIndexLow as u64);
+    let volume_path = windows_volume_path(Path::new(path))
+        .ok_or_else(|| "当前路径不支持 file ID 跟踪。".to_string())?;
+
+    Ok(Some(FileIdentity {
+        volume_path,
+        volume_serial_number: info.dwVolumeSerialNumber,
+        file_id: file_id.to_string(),
+    }))
+}
+
+#[cfg(windows)]
+fn resolve_windows_file_identity_path(identity: &FileIdentity) -> Result<Option<String>, String> {
+    use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
+    use windows_sys::Win32::Storage::FileSystem::{
+        CreateFileW, GetFinalPathNameByHandleW, OpenFileById, FILE_FLAG_BACKUP_SEMANTICS,
+        FILE_ID_DESCRIPTOR, FILE_ID_DESCRIPTOR_0, FILE_SHARE_DELETE, FILE_SHARE_READ,
+        FILE_SHARE_WRITE, FileIdType, OPEN_EXISTING, VOLUME_NAME_DOS,
+    };
+
+    let volume_path = path_to_utf16(&identity.volume_path);
+    let volume_handle = unsafe {
+        CreateFileW(
+            volume_path.as_ptr(),
+            0,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+            std::ptr::null(),
+            OPEN_EXISTING,
+            FILE_FLAG_BACKUP_SEMANTICS,
+            std::ptr::null_mut(),
+        )
+    };
+    if volume_handle == INVALID_HANDLE_VALUE {
+        return Err(format!("无法打开卷句柄: {}", std::io::Error::last_os_error()));
+    }
+
+    let file_id = identity
+        .file_id
+        .parse::<u64>()
+        .map_err(|e| format!("无效的 file ID: {}", e))?;
+    let descriptor = FILE_ID_DESCRIPTOR {
+        dwSize: std::mem::size_of::<FILE_ID_DESCRIPTOR>() as u32,
+        Type: FileIdType,
+        Anonymous: FILE_ID_DESCRIPTOR_0 { FileId: file_id as i64 },
+    };
+
+    let file_handle = unsafe {
+        OpenFileById(
+            volume_handle,
+            &descriptor,
+            0,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+            std::ptr::null(),
+            FILE_FLAG_BACKUP_SEMANTICS,
+        )
+    };
+    unsafe {
+        CloseHandle(volume_handle);
+    }
+    if file_handle == INVALID_HANDLE_VALUE {
+        return Ok(None);
+    }
+
+    let len = unsafe { GetFinalPathNameByHandleW(file_handle, std::ptr::null_mut(), 0, VOLUME_NAME_DOS) };
+    if len == 0 {
+        unsafe {
+            CloseHandle(file_handle);
+        }
+        return Err(format!("无法解析文件路径: {}", std::io::Error::last_os_error()));
+    }
+
+    let mut buffer = vec![0u16; len as usize + 1];
+    let written = unsafe { GetFinalPathNameByHandleW(file_handle, buffer.as_mut_ptr(), buffer.len() as u32, VOLUME_NAME_DOS) };
+    unsafe {
+        CloseHandle(file_handle);
+    }
+    if written == 0 {
+        return Err(format!("无法读取文件路径: {}", std::io::Error::last_os_error()));
+    }
+
+    buffer.truncate(written as usize);
+    let path = String::from_utf16_lossy(&buffer);
+    Ok(Some(normalize_windows_final_path(path)))
+}
+
+#[tauri::command]
+async fn get_file_identity(path: String) -> Result<Option<FileIdentity>, String> {
+    #[cfg(windows)]
+    {
+        return get_windows_file_identity(&path);
+    }
+
+    #[cfg(not(windows))]
+    {
+        let _ = path;
+        Ok(None)
+    }
+}
+
+#[tauri::command]
+async fn resolve_file_path_by_identity(identity: FileIdentity) -> Result<Option<String>, String> {
+    #[cfg(windows)]
+    {
+        return resolve_windows_file_identity_path(&identity);
+    }
+
+    #[cfg(not(windows))]
+    {
+        let _ = identity;
+        Ok(None)
+    }
 }
 
 #[cfg(windows)]
@@ -1239,6 +1406,8 @@ pub fn run() {
             inspect_paths,
             save_file_dialog,
             get_file_info,
+            get_file_identity,
+            resolve_file_path_by_identity,
             run_terminal_command,
             running_child_count,
             kill_child_processes,

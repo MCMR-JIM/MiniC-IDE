@@ -5,12 +5,19 @@ export interface FileEntry {
   children?: FileEntry[];
 }
 
+export interface FileIdentity {
+  volume_path: string;
+  volume_serial_number: number;
+  file_id: string;
+}
+
 export interface TabFile {
   path: string;
   name: string;
   content: string;
   modified: boolean;
   language: string;
+  fileIdentity?: FileIdentity | null;
 }
 
 export interface CompileResult {
