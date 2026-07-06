@@ -219,13 +219,68 @@ fn detect_source_language(file_path: &str) -> Result<SourceLanguage, String> {
     }
 }
 
-fn find_gnu_candidates(app: &tauri::AppHandle, language: SourceLanguage) -> Vec<String> {
+fn app_base_dirs(app: &tauri::AppHandle) -> Vec<PathBuf> {
     let exe_dir = std::env::current_exe()
         .ok()
         .and_then(|p| p.parent().map(PathBuf::from))
         .unwrap_or_else(|| PathBuf::from("."));
     let resource_dir = app.path().resource_dir().unwrap_or_else(|_| exe_dir.clone());
 
+    let mut bases = Vec::<PathBuf>::new();
+    let mut seen = HashSet::<String>::new();
+    for base in [exe_dir, resource_dir] {
+        if seen.insert(base.to_string_lossy().to_string()) {
+            bases.push(base);
+        }
+    }
+    bases
+}
+
+/// Return every existing bundled `mingw/bin` directory. Tauri copies the
+/// `resources/mingw` resource so on an installed app it ends up at
+/// `<exe_dir>/resources/mingw/bin`; a manual layout may also place it at
+/// `<exe_dir>/mingw/bin`. Both are probed.
+fn candidate_mingw_bin_dirs(app: &tauri::AppHandle) -> Vec<PathBuf> {
+    let mut dirs = Vec::<PathBuf>::new();
+    let mut seen = HashSet::<String>::new();
+    for base in app_base_dirs(app) {
+        let subs = [
+            base.join("mingw").join("bin"),
+            base.join("resources").join("mingw").join("bin"),
+        ];
+        for sub in subs {
+            if sub.is_dir() {
+                let s = sub.to_string_lossy().to_string();
+                if seen.insert(s) {
+                    dirs.push(sub);
+                }
+            }
+        }
+    }
+    dirs
+}
+
+/// Build a PATH value with all bundled `mingw/bin` directories prepended, so
+/// that a compiler launched from the bundle can locate its helper executables
+/// (cc1/cc1plus) and their runtime DLLs (libwinpthread-1.dll, libstdc++-6.dll,
+/// libgcc_s_seh-1.dll, ...), which otherwise only live in `mingw/bin`.
+fn augmented_path_env(app: &tauri::AppHandle) -> Option<std::ffi::OsString> {
+    let dirs = candidate_mingw_bin_dirs(app);
+    if dirs.is_empty() {
+        return None;
+    }
+    let mut value = std::ffi::OsString::new();
+    for dir in &dirs {
+        value.push(dir.as_os_str());
+        value.push(";");
+    }
+    if let Some(existing) = std::env::var_os("PATH") {
+        value.push(existing);
+    }
+    Some(value)
+}
+
+fn find_gnu_candidates(app: &tauri::AppHandle, language: SourceLanguage) -> Vec<String> {
     let ordered_names = match language {
         SourceLanguage::C => ["gcc.exe", "gcc", "g++.exe", "g++"],
         SourceLanguage::Cpp => ["g++.exe", "g++", "gcc.exe", "gcc"],
@@ -233,17 +288,17 @@ fn find_gnu_candidates(app: &tauri::AppHandle, language: SourceLanguage) -> Vec<
 
     let mut out = Vec::<String>::new();
     let mut seen = HashSet::<String>::new();
-    let bases = [exe_dir, resource_dir];
 
-    for base in bases {
+    let mut roots = candidate_mingw_bin_dirs(app);
+    roots.extend(app_base_dirs(app));
+
+    for root in roots {
         for name in ordered_names {
-            let paths = [base.join("mingw").join("bin").join(name), base.join(name)];
-            for p in paths {
-                if p.exists() {
-                    let s = p.to_string_lossy().to_string();
-                    if seen.insert(s.clone()) {
-                        out.push(s);
-                    }
+            let p = root.join(name);
+            if p.exists() {
+                let s = p.to_string_lossy().to_string();
+                if seen.insert(s.clone()) {
+                    out.push(s);
                 }
             }
         }
@@ -290,9 +345,13 @@ async fn compile_file(
     let mut compile_output: Option<std::process::Output> = None;
     let mut spawn_errors: Vec<String> = Vec::new();
     let candidates = find_gnu_candidates(&app, language);
+    let path_env = augmented_path_env(&app);
     for cc in candidates {
         let mut cmd = Command::new(&cc);
         cmd.stdin(Stdio::null());
+        if let Some(ref p) = path_env {
+            cmd.env("PATH", p);
+        }
         cmd.arg("-x").arg(language.arg());
         cmd.arg("-o").arg(&compile_output_path).arg(&compile_source_path);
         #[cfg(windows)]
@@ -890,6 +949,9 @@ fn spawn_pty_executable(
 
     if !cwd.is_empty() && Path::new(&cwd).exists() {
         cmd.cwd(&cwd);
+    }
+    if let Some(path_env) = augmented_path_env(&app) {
+        cmd.env("PATH", path_env);
     }
     let mut child = match pair.slave.spawn_command(cmd) {
         Ok(c) => c,
