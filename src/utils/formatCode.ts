@@ -1,6 +1,7 @@
 import init, { format } from '@wasm-fmt/clang-format/vite';
 
-const LLVM_STYLE = '{BasedOnStyle: LLVM, IndentWidth: 4, TabWidth: 4, UseTab: Never}';
+const LLVM_STYLE =
+  '{BasedOnStyle: LLVM, IndentWidth: 4, TabWidth: 4, UseTab: Never, ColumnLimit: 0}';
 
 let initPromise: Promise<void> | null = null;
 
