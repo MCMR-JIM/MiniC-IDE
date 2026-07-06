@@ -1,8 +1,25 @@
-import React, { useEffect, useRef } from 'react';
+import React, { useCallback, useEffect, useRef } from 'react';
 import Editor, { OnMount, OnChange, BeforeMount } from '@monaco-editor/react';
 import { useIDEStore } from '../store/ideStore';
+import { formatSource } from '../utils/formatCode';
 import FindReplace from './FindReplace';
 import './EditorPane.css';
+
+type MonacoModelLike = {
+  getValue: () => string;
+  getFullModelRange: () => unknown;
+};
+
+type MonacoEditorLike = {
+  trigger: (source: string, cmd: string, args: unknown) => void;
+  getModel: () => MonacoModelLike | null;
+  executeEdits: (
+    source: string,
+    edits: Array<{ range: unknown; text: string; forceMoveMarkers?: boolean }>,
+  ) => void;
+  pushUndoStop: () => void;
+  focus: () => void;
+};
 
 function resetIdeOuterScroll() {
   const sels = ['.ide-editor-area', '.ide-main', '.ide-body', '.ide-root', '#root'];
@@ -26,6 +43,28 @@ const EditorPane: React.FC = () => {
   const hostRef = useRef<HTMLDivElement | null>(null);
   const activeTab = tabs.find(t => t.path === activeTabPath);
 
+  const runFormat = useCallback(async () => {
+    const editor = editorRef.current as MonacoEditorLike | null;
+    if (!editor) return;
+    const model = editor.getModel();
+    if (!model) return;
+    const original = model.getValue();
+    if (!original.trim()) return;
+    const path = useIDEStore.getState().activeTabPath ?? 'main.cpp';
+    try {
+      const formatted = await formatSource(original, path);
+      if (formatted && formatted !== original) {
+        editor.executeEdits('format', [
+          { range: model.getFullModelRange(), text: formatted, forceMoveMarkers: true },
+        ]);
+        editor.pushUndoStop();
+      }
+      editor.focus();
+    } catch (err) {
+      console.error('格式化失败:', err);
+    }
+  }, []);
+
   useEffect(() => {
     const handler = (e: CustomEvent) => {
       const { action } = e.detail;
@@ -38,6 +77,7 @@ const EditorPane: React.FC = () => {
       if (action === 'edit.paste') editor.trigger('', 'editor.action.clipboardPasteAction', null);
       if (action === 'edit.selectAll') editor.trigger('', 'editor.action.selectAll', null);
       if (action === 'edit.find' || action === 'edit.replace') setFindVisible(true);
+      if (action === 'edit.format') void runFormat();
       if (action === 'view.zoomIn') editor.trigger('', 'editor.action.fontZoomIn', null);
       if (action === 'view.zoomOut') editor.trigger('', 'editor.action.fontZoomOut', null);
       if (action === 'view.zoomReset') editor.trigger('', 'editor.action.fontZoomReset', null);
@@ -48,7 +88,7 @@ const EditorPane: React.FC = () => {
       document.removeEventListener('menu-action', handler as EventListener);
       document.removeEventListener('context-menu-action', handler as EventListener);
     };
-  }, [setFindVisible]);
+  }, [setFindVisible, runFormat]);
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
@@ -209,7 +249,7 @@ const EditorPane: React.FC = () => {
     });
   };
 
-  const handleEditorMount: OnMount = (editor) => {
+  const handleEditorMount: OnMount = (editor, monaco) => {
     editorRef.current = editor;
 
     const scheduleLayoutFix = () => {
@@ -233,6 +273,9 @@ const EditorPane: React.FC = () => {
     editor.addCommand(2048 | 87, () => {
       document.dispatchEvent(new CustomEvent('menu-action', { detail: { action: 'file.closeTab' } }));
     });
+    editor.addCommand(monaco.KeyMod.Shift | monaco.KeyMod.Alt | monaco.KeyCode.KeyF, () => {
+      document.dispatchEvent(new CustomEvent('menu-action', { detail: { action: 'edit.format' } }));
+    });
     editor.onDidChangeCursorPosition((e) => {
       setCursorPosition({ line: e.position.lineNumber, col: e.position.column });
     });
@@ -250,6 +293,8 @@ const EditorPane: React.FC = () => {
         { label: '剪切', action: 'edit.cut', shortcut: 'Ctrl+X' },
         { label: '复制', action: 'edit.copy', shortcut: 'Ctrl+C' },
         { label: '粘贴', action: 'edit.paste', shortcut: 'Ctrl+V' },
+        { separator: true },
+        { label: '格式化代码', action: 'edit.format', shortcut: 'Shift+Alt+F' },
         { separator: true },
         { label: '全选', action: 'edit.selectAll', shortcut: 'Ctrl+A' },
         { separator: true },

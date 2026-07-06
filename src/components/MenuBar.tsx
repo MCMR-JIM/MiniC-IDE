@@ -37,6 +37,8 @@ const MENUS: MenuDefinition[] = [
       { label: '查找', action: 'edit.find', shortcut: 'Ctrl+F' },
       { label: '替换', action: 'edit.replace', shortcut: 'Ctrl+H' },
       { separator: true },
+      { label: '格式化代码', action: 'edit.format', shortcut: 'Shift+Alt+F' },
+      { separator: true },
       { label: '全选', action: 'edit.selectAll', shortcut: 'Ctrl+A' },
     ],
   },
