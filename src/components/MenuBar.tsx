@@ -1,4 +1,6 @@
 import React, { useState, useRef, useEffect } from 'react';
+import { getCurrentWindow } from '@tauri-apps/api/window';
+import { isTauriRuntime } from '../tauriEnv';
 import './MenuBar.css';
 
 interface MenuDefinition {
@@ -68,6 +70,7 @@ const MENUS: MenuDefinition[] = [
 
 const MenuBar: React.FC = () => {
   const [openMenu, setOpenMenu] = useState<number | null>(null);
+  const [isMaximized, setIsMaximized] = useState(false);
   const barRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -78,9 +81,39 @@ const MenuBar: React.FC = () => {
     return () => document.removeEventListener('mousedown', handler);
   }, []);
 
+  useEffect(() => {
+    if (!isTauriRuntime()) return;
+    let unlisten: (() => void) | undefined;
+    let alive = true;
+    (async () => {
+      const win = getCurrentWindow();
+      setIsMaximized(await win.isMaximized());
+      const u = await win.onResized(async () => {
+        if (alive) setIsMaximized(await win.isMaximized());
+      });
+      if (alive) unlisten = u; else u();
+    })();
+    return () => {
+      alive = false;
+      unlisten?.();
+    };
+  }, []);
+
   const dispatch = (action: string) => {
     document.dispatchEvent(new CustomEvent('menu-action', { detail: { action } }));
     setOpenMenu(null);
+  };
+
+  const handleMinimize = () => {
+    if (isTauriRuntime()) void getCurrentWindow().minimize();
+  };
+
+  const handleToggleMaximize = () => {
+    if (isTauriRuntime()) void getCurrentWindow().toggleMaximize();
+  };
+
+  const handleClose = () => {
+    if (isTauriRuntime()) void getCurrentWindow().close();
   };
 
   return (
@@ -115,6 +148,40 @@ const MenuBar: React.FC = () => {
           )}
         </div>
       ))}
+      <div className="menubar-drag-region" data-tauri-drag-region />
+      <div className="menubar-window-controls">
+        <button
+          className="menubar-window-btn"
+          onClick={handleMinimize}
+          aria-label="最小化"
+          title="最小化"
+        >
+          <svg width="10" height="10" viewBox="0 0 10 10"><rect x="0" y="4.5" width="10" height="1" fill="currentColor" /></svg>
+        </button>
+        <button
+          className="menubar-window-btn"
+          onClick={handleToggleMaximize}
+          aria-label={isMaximized ? '还原' : '最大化'}
+          title={isMaximized ? '还原' : '最大化'}
+        >
+          {isMaximized ? (
+            <svg width="10" height="10" viewBox="0 0 10 10">
+              <rect x="2.5" y="0.5" width="7" height="7" fill="none" stroke="currentColor" strokeWidth="1" />
+              <rect x="0.5" y="2.5" width="7" height="7" fill="#3c3c3c" stroke="currentColor" strokeWidth="1" />
+            </svg>
+          ) : (
+            <svg width="10" height="10" viewBox="0 0 10 10"><rect x="0.5" y="0.5" width="9" height="9" fill="none" stroke="currentColor" strokeWidth="1" /></svg>
+          )}
+        </button>
+        <button
+          className="menubar-window-btn menubar-window-btn-close"
+          onClick={handleClose}
+          aria-label="关闭"
+          title="关闭"
+        >
+          <svg width="10" height="10" viewBox="0 0 10 10"><path d="M0.5 0.5 L9.5 9.5 M9.5 0.5 L0.5 9.5" stroke="currentColor" strokeWidth="1" /></svg>
+        </button>
+      </div>
     </div>
   );
 };

@@ -82,3 +82,39 @@
   background: #454545;
   margin: 4px 0;
 }
+
+.menubar-drag-region {
+  flex: 1;
+  align-self: stretch;
+}
+
+.menubar-window-controls {
+  display: flex;
+  align-items: stretch;
+  height: 30px;
+  margin-right: -8px;
+}
+
+.menubar-window-btn {
+  width: 44px;
+  height: 30px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: none;
+  padding: 0;
+  margin: 0;
+  color: #cccccc;
+  cursor: pointer;
+  outline: none;
+}
+
+.menubar-window-btn:hover {
+  background: #505050;
+}
+
+.menubar-window-btn-close:hover {
+  background: #e81123;
+  color: #fff;
+}
