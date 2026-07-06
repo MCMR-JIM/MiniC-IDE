@@ -44,7 +44,7 @@
   },
   "plugins": {
     "updater": {
-      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDc0NTRFNkFFRjc2RUEwMzAKUldRd29HNzNydVpVZE1xek5VemZCaGw2N3FzZDlGcy9SRVRPZnUwem5XbTJ2Y3N6UmRWKzRDdjUK",
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDNBQjNERjVEQTdEQ0E2QwpSV1JzeW4zYTlUMnJBd25qNldRTDVrZEg0bGI5WDBZQ3hIaWQwbzRnblZwR0VvNTM0WXBsY2VWNwo=",
       "endpoints": [
         "https://github.com/MCMR-JIM/MiniC-IDE/releases/latest/download/latest.json"
       ],
