@@ -1,6 +1,6 @@
 [package]
 name = "minic-ide"
-version = "1.2.0"
+version = "1.2.1"
 description = "MiniC IDE"
 authors = ["MCMR"]
 edition = "2021"
