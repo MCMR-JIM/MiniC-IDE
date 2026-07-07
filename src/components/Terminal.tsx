@@ -248,6 +248,7 @@ const Terminal: React.FC<TerminalProps> = ({ visible = true }) => {
   const currentSourcePathRef = useRef<string | null>(null);
   const ptyStripStateRef = useRef<PtyStripState>(newPtyStripState());
   const ptyCrPendingRef = useRef(false);
+  const ptyLastCharRef = useRef<string>('\n');
   const renderDbgCountRef = useRef(0);
   const ptyEncodingRef = useRef<string>(navigator.userAgent.toLowerCase().includes('windows') ? 'gbk' : 'utf-8');
   const ptyDecoderRef = useRef<TextDecoder>(createTextDecoder(ptyEncodingRef.current));
@@ -258,6 +259,7 @@ const Terminal: React.FC<TerminalProps> = ({ visible = true }) => {
   const resetPtyStripState = () => {
     ptyStripStateRef.current = newPtyStripState();
     ptyCrPendingRef.current = false;
+    ptyLastCharRef.current = '\n';
     renderDbgCountRef.current = 0;
     resetPtyDecoding();
   };
@@ -355,23 +357,43 @@ const Terminal: React.FC<TerminalProps> = ({ visible = true }) => {
 
     term.attachCustomKeyEventHandler((ev) => {
       if (ev.type !== 'keydown') return true;
-      if ((ev.ctrlKey || ev.metaKey) && ev.shiftKey && (ev.key === 'c' || ev.key === 'C')) {
+      const mod = ev.ctrlKey || ev.metaKey;
+      const isC = ev.key === 'c' || ev.key === 'C';
+      const isV = ev.key === 'v' || ev.key === 'V';
+
+      // Ctrl/Cmd+C (and Ctrl+Shift+C): if text is selected, copy it and do NOT
+      // interrupt the program. Only when nothing is selected does plain Ctrl+C
+      // send an interrupt to a running program.
+      if (mod && isC) {
         const selected = term.getSelection();
         if (selected) {
           void navigator.clipboard.writeText(selected).catch(() => {});
+          term.clearSelection();
+          return false;
+        }
+        if (!ev.shiftKey && ptyForwardRef.current) {
+          void requestInterrupt(false);
         }
         return false;
       }
-      if (!ptyForwardRef.current) return true;
-      // Ctrl+C: forward ETX to PTY (allow copy when selection exists).
-      if ((ev.ctrlKey || ev.metaKey) && (ev.key === 'c' || ev.key === 'C')) {
-        if (term.hasSelection()) return true;
-        void requestInterrupt(false);
+
+      // Ctrl/Cmd+V (and Ctrl+Shift+V): paste from clipboard.
+      if (mod && isV) {
+        void navigator.clipboard.readText().then((text) => {
+          if (!text) return;
+          if (ptyForwardRef.current) {
+            void invoke('pty_write', { data: text }).catch(() => {});
+          } else {
+            lineBuf.current += text;
+            termRef.current?.write(text);
+          }
+        }).catch(() => {});
         return false;
       }
+
       // Ctrl+Break / Ctrl+Pause: hard stop fallback.
       if (ev.ctrlKey && ev.key === 'Pause') {
-        void requestInterrupt(true);
+        if (ptyForwardRef.current) void requestInterrupt(true);
         return false;
       }
       return true;
@@ -583,16 +605,21 @@ const Terminal: React.FC<TerminalProps> = ({ visible = true }) => {
       if (payload.stream === 'meta' && data.startsWith('__MINIC_EXIT_CODE__')) {
         try {
           const tail = ptyDecoderRef.current.decode();
-          if (tail) t.write(tail);
+          if (tail) {
+            t.write(tail);
+            ptyLastCharRef.current = tail[tail.length - 1];
+          }
         } catch {
           // Ignore decoder flush failures.
         }
+        const needsNewline = ptyLastCharRef.current !== '\n';
         ptyForwardRef.current = false;
         emitRunningState(false);
         resetPtyStripState();
         const code = parseInt(data.replace('__MINIC_EXIT_CODE__', ''), 10);
         const exit = Number.isNaN(code) ? -1 : code;
         const color = exit === 0 ? '36' : '31';
+        if (needsNewline) t.write('\r\n');
         t.writeln(`\x1b[${color}m[exit ${exit}]\x1b[0m`);
         redrawInputLine(t, cwdRef, lineBuf);
         return;
@@ -604,7 +631,10 @@ const Terminal: React.FC<TerminalProps> = ({ visible = true }) => {
           if (ptyEncodingRef.current !== 'utf-8' && looksLikeUtf8(bytes)) {
             try {
               const tail = ptyDecoderRef.current.decode();
-              if (tail) t.write(tail);
+              if (tail) {
+                t.write(tail);
+                ptyLastCharRef.current = tail[tail.length - 1];
+              }
             } catch {
               // Ignore decoder flush failures.
             }
@@ -621,6 +651,7 @@ const Terminal: React.FC<TerminalProps> = ({ visible = true }) => {
               }
             }
             t.write(text);
+            ptyLastCharRef.current = text[text.length - 1];
           }
         } catch {
           // Ignore malformed payloads.
@@ -641,6 +672,7 @@ const Terminal: React.FC<TerminalProps> = ({ visible = true }) => {
       }
       if (!rendered) return;
       t.write(rendered);
+      ptyLastCharRef.current = rendered[rendered.length - 1];
     };
 
     const attachListener = async (attempt = 0) => {
