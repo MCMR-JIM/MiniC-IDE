@@ -25,6 +25,10 @@ interface IDEState {
   // Cursor position
   cursorPosition: { line: number; col: number };
   setCursorPosition: (pos: { line: number; col: number }) => void;
+  // Default encoding for new files (from system/terminal code page)
+  defaultEncoding: string;
+  setDefaultEncoding: (enc: string) => void;
+  setTabEncoding: (path: string, encoding: string) => void;
   // Output panel
   setOutputVisible: (v: boolean) => void;
   // Find/Replace
@@ -102,6 +106,13 @@ export const useIDEStore = create<IDEState>((set) => ({
   contextMenu: { visible: false, x: 0, y: 0, items: [] },
   cursorPosition: { line: 1, col: 1 },
   setCursorPosition: (pos) => set({ cursorPosition: pos }),
+  defaultEncoding: 'UTF-8',
+  setDefaultEncoding: (enc) => set({ defaultEncoding: enc }),
+  setTabEncoding: (path, encoding) => set((state) => ({
+    tabs: state.tabs.map((t) =>
+      t.path === path ? { ...t, encoding, modified: true } : t,
+    ),
+  })),
   setOutputVisible: (v) => set({ outputVisible: v }),
   findVisible: false,
   findQuery: '',

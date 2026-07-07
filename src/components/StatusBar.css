@@ -97,6 +97,40 @@
   font-weight: 600;
 }
 
+.status-encoding-wrap {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+.status-encoding-menu {
+  position: absolute;
+  bottom: 24px;
+  right: 0;
+  min-width: 120px;
+  background: #252526;
+  color: #cccccc;
+  border: 1px solid #454545;
+  box-shadow: 0 -2px 12px rgba(0, 0, 0, 0.5);
+  z-index: 9999;
+  padding: 4px 0;
+}
+
+.status-encoding-option {
+  padding: 5px 14px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.status-encoding-option:hover {
+  background: #094771;
+  color: #ffffff;
+}
+
+.status-encoding-option.active {
+  color: #4ec9b0;
+}
+
 .status-pulse {
   animation: status-pulse 1.2s ease-in-out infinite;
 }

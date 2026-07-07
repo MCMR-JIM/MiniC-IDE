@@ -11,7 +11,7 @@ import EditorPane from './components/EditorPane';
 import OutputPanel from './components/OutputPanel';
 import StatusBar from './components/StatusBar';
 import ContextMenu from './components/ContextMenu';
-import { CompileResult, FileIdentity, TabFile } from './types';
+import { CompileResult, FileIdentity, FileReadResult, TabFile } from './types';
 import { isTauriRuntime } from './tauriEnv';
 import { getEditorLanguageFromFileName, isCompilableSourceFileName, isHeaderFileName } from './utils/language';
 import './App.css';
@@ -107,6 +107,18 @@ const App: React.FC = () => {
     document.addEventListener('contextmenu', (e) => e.preventDefault());
   }, []);
 
+  useEffect(() => {
+    if (!isTauriRuntime()) return;
+    (async () => {
+      try {
+        const enc = await invoke<string>('get_default_encoding');
+        if (enc) useIDEStore.getState().setDefaultEncoding(enc);
+      } catch {
+        // Keep the UTF-8 fallback.
+      }
+    })();
+  }, []);
+
   const askExitDialog = useCallback((state: Exclude<ExitDialogState, null>) => {
     return new Promise<string>((resolve) => {
       exitDialogResolverRef.current = resolve;
@@ -155,7 +167,7 @@ const App: React.FC = () => {
         const { markTabSaved } = useIDEStore.getState();
         for (const t of modified) {
           try {
-            await invoke('write_file_content', { path: t.path, content: t.content });
+            await invoke('write_file_content', { path: t.path, content: t.content, encoding: t.encoding });
             markTabSaved(t.path);
           } catch (e) {
             await message(`保存失败：${String(e)}`, { title: 'MiniC IDE', kind: 'error', buttons: 'Ok' });
@@ -241,7 +253,7 @@ const App: React.FC = () => {
             if (saveChoice === 'save_all_exit') {
               for (const t of modified) {
                 try {
-                  await invoke('write_file_content', { path: t.path, content: t.content });
+                  await invoke('write_file_content', { path: t.path, content: t.content, encoding: t.encoding });
                   markTabSaved(t.path);
                 } catch (e) {
                   await message(`保存失败：${String(e)}`, { title: 'MiniC IDE', kind: 'error', buttons: 'Ok' });
@@ -313,16 +325,17 @@ const App: React.FC = () => {
   const openFilePath = useCallback(async (selected: string) => {
     try {
       const name = selected.split(/[\\/]/).pop() ?? selected;
-      const [content, fileIdentity] = await Promise.all([
-        invoke<string>('read_file_content', { path: selected }),
+      const [readResult, fileIdentity] = await Promise.all([
+        invoke<FileReadResult>('read_file_content', { path: selected }),
         invoke<FileIdentity | null>('get_file_identity', { path: selected }),
       ]);
+      const { content, encoding } = readResult;
       const lang = getEditorLanguageFromFileName(name);
       if (projectRoot && !isPathInsideRoot(selected, projectRoot)) {
         setProjectRoot(null);
         setFileTree([]);
       }
-      openTab({ path: selected, name, content, modified: false, language: lang, fileIdentity });
+      openTab({ path: selected, name, content, modified: false, language: lang, encoding, fileIdentity });
       return true;
     } catch (e) {
       await message(`打开文件失败：${String(e)}`, { title: 'MiniC IDE', kind: 'error', buttons: 'Ok' });
@@ -365,13 +378,13 @@ const App: React.FC = () => {
         return result;
       }
       if (tab.modified) {
-        await invoke('write_file_content', { path, content: tab.content });
+        await invoke('write_file_content', { path, content: tab.content, encoding: tab.encoding });
         markTabSaved(path);
         if (path !== initialPath) {
           setTabFileIdentity(path, await invoke<FileIdentity | null>('get_file_identity', { path }));
         }
       }
-      const result = await invoke<CompileResult>('compile_file', { filePath: path, outputPath: null });
+      const result = await invoke<CompileResult>('compile_file', { filePath: path, outputPath: null, encoding: tab.encoding });
       setCompileResult(result);
       if (result.stdout) result.stdout.split('\n').filter(Boolean).forEach(l => appendOutput(l));
       if (result.stderr) result.stderr.split('\n').filter(Boolean).forEach(l => appendOutput(l));
@@ -399,13 +412,14 @@ const App: React.FC = () => {
     if (!compileResult?.success) return;
     const path = useIDEStore.getState().activeTabPath;
     if (!path) return;
+    const encoding = useIDEStore.getState().tabs.find(t => t.path === path)?.encoding;
     const exePath = path.replace(/\.[^\\/]+$/, '.exe');
     const cwd = path.includes('\\') ? path.replace(/\\[^\\]+$/, '') : path.replace(/\/[^\/]+$/, '');
     setOutputVisible(true);
     document.dispatchEvent(new CustomEvent('switch-output-tab', { detail: { tab: 'terminal' } }));
     fixEditorLayoutAfter();
     setTimeout(() => {
-      document.dispatchEvent(new CustomEvent('terminal-run', { detail: { type: 'exe', exePath, cwd, sourcePath: path } }));
+      document.dispatchEvent(new CustomEvent('terminal-run', { detail: { type: 'exe', exePath, cwd, sourcePath: path, encoding } }));
       fixEditorLayoutAfter();
     }, 100);
     setTimeout(fixEditorLayoutAfter, 300);
@@ -430,7 +444,7 @@ const App: React.FC = () => {
         if (!savePath) return;
         remapPathReferences(initialPath, savePath, false);
       }
-      await invoke('write_file_content', { path: savePath, content: tab.content });
+      await invoke('write_file_content', { path: savePath, content: tab.content, encoding: tab.encoding });
       const nextIdentity = await invoke<FileIdentity | null>('get_file_identity', { path: savePath });
       setTabFileIdentity(savePath, nextIdentity);
       markTabSaved(savePath);
@@ -860,7 +874,7 @@ const App: React.FC = () => {
               if (choice === 'switch_and_save') {
                 for (const t of modified) {
                   try {
-                    await invoke('write_file_content', { path: t.path, content: t.content });
+                    await invoke('write_file_content', { path: t.path, content: t.content, encoding: t.encoding });
                     markTabSaved(t.path);
                   } catch (e) {
                     await message(`保存失败：${String(e)}`, { title: 'MiniC IDE', kind: 'error', buttons: 'Ok' });

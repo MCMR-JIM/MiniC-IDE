@@ -17,7 +17,13 @@ export interface TabFile {
   content: string;
   modified: boolean;
   language: string;
+  encoding: string;
   fileIdentity?: FileIdentity | null;
+}
+
+export interface FileReadResult {
+  content: string;
+  encoding: string;
 }
 
 export interface CompileResult {

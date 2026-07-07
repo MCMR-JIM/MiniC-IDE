@@ -246,6 +246,7 @@ const Terminal: React.FC<TerminalProps> = ({ visible = true }) => {
   const lastInterruptAtRef = useRef(0);
   const currentExePathRef = useRef<string | null>(null);
   const currentSourcePathRef = useRef<string | null>(null);
+  const currentEncodingRef = useRef<string | null>(null);
   const ptyStripStateRef = useRef<PtyStripState>(newPtyStripState());
   const ptyCrPendingRef = useRef(false);
   const ptyLastCharRef = useRef<string>('\n');
@@ -476,6 +477,7 @@ const Terminal: React.FC<TerminalProps> = ({ visible = true }) => {
           sourcePath: currentSourcePathRef.current,
           rows,
           cols,
+          encoding: currentEncodingRef.current ?? undefined,
         });
       } catch (e) {
         ptyForwardRef.current = false;
@@ -709,9 +711,10 @@ const Terminal: React.FC<TerminalProps> = ({ visible = true }) => {
 
   useEffect(() => {
     const handler = (e: Event) => {
-      const { cwd: newCwd, type, exePath, sourcePath } = (e as CustomEvent).detail ?? {};
+      const { cwd: newCwd, type, exePath, sourcePath, encoding } = (e as CustomEvent).detail ?? {};
       if (newCwd) cwdRef.current = newCwd;
       currentSourcePathRef.current = typeof sourcePath === 'string' ? sourcePath : null;
+      currentEncodingRef.current = typeof encoding === 'string' ? encoding : null;
       if (type === 'exe' && exePath) {
         setTimeout(() => runExeRef.current(exePath, newCwd || cwdRef.current), 50);
       }

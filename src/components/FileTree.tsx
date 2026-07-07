@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { useIDEStore } from '../store/ideStore';
-import { FileEntry, FileIdentity } from '../types';
+import { FileEntry, FileIdentity, FileReadResult } from '../types';
 import { invoke } from '@tauri-apps/api/core';
 import { getFileIconComponent } from './FileIcons';
 import { getEditorLanguageFromFileName } from '../utils/language';
@@ -112,14 +112,14 @@ const FileNode: React.FC<{
         return;
       }
       try {
-        const [content, fileIdentity] = await Promise.all([
-          invoke<string>('read_file_content', { path: entry.path }),
+        const [readResult, fileIdentity] = await Promise.all([
+          invoke<FileReadResult>('read_file_content', { path: entry.path }),
           invoke<FileIdentity | null>('get_file_identity', { path: entry.path }),
         ]);
-        openTab({ path: entry.path, name: entry.name, content, modified: false, language: getEditorLanguageFromFileName(entry.name), fileIdentity });
+        openTab({ path: entry.path, name: entry.name, content: readResult.content, modified: false, language: getEditorLanguageFromFileName(entry.name), encoding: readResult.encoding, fileIdentity });
       } catch (e: unknown) {
         const msg = typeof e === 'string' ? e : String(e);
-        openTab({ path: entry.path, name: entry.name, content: msg, modified: false, language: 'plaintext' });
+        openTab({ path: entry.path, name: entry.name, content: msg, modified: false, language: 'plaintext', encoding: 'UTF-8' });
       }
     }
   };
@@ -265,6 +265,7 @@ const FileTree: React.FC = () => {
           content: '',
           modified: false,
           language: getEditorLanguageFromFileName(name),
+          encoding: useIDEStore.getState().defaultEncoding,
           fileIdentity,
         });
       } else if (inlineState.mode === 'newFolder') {

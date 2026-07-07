@@ -30,7 +30,7 @@ const TabBar: React.FC = () => {
         closeTab(path);
         return;
       }
-      await invoke('write_file_content', { path: savePath, content: tab.content });
+      await invoke('write_file_content', { path: savePath, content: tab.content, encoding: tab.encoding });
       const nextIdentity = await invoke<FileIdentity | null>('get_file_identity', { path: savePath }).catch(() => null);
       setTabFileIdentity(savePath, nextIdentity);
       closeTab(savePath);

@@ -1,10 +1,13 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { useIDEStore } from '../store/ideStore';
 import './StatusBar.css';
 
+const ENCODING_OPTIONS = ['UTF-8', 'GBK', 'GB18030', 'Big5', 'Shift_JIS', 'EUC-KR'];
+
 const StatusBar: React.FC = () => {
-  const { tabs, activeTabPath, outputVisible, setOutputVisible, cursorPosition, isCompiling, isRunning } = useIDEStore();
+  const { tabs, activeTabPath, outputVisible, setOutputVisible, cursorPosition, isCompiling, isRunning, setTabEncoding } = useIDEStore();
   const activeTab = tabs.find(t => t.path === activeTabPath);
+  const [encodingMenuOpen, setEncodingMenuOpen] = useState(false);
 
   const handleCompile = () => {
     document.dispatchEvent(new CustomEvent('menu-action', { detail: { action: 'run.compile' } }));
@@ -16,6 +19,11 @@ const StatusBar: React.FC = () => {
 
   const handleStop = () => {
     document.dispatchEvent(new CustomEvent('menu-action', { detail: { action: 'run.stop' } }));
+  };
+
+  const chooseEncoding = (enc: string) => {
+    if (activeTab) setTabEncoding(activeTab.path, enc);
+    setEncodingMenuOpen(false);
   };
 
   return (
@@ -31,7 +39,28 @@ const StatusBar: React.FC = () => {
           <>
             <span className="status-item">行 {cursorPosition.line}, 列 {cursorPosition.col}</span>
             <span className="status-item">C</span>
-            <span className="status-item">UTF-8</span>
+            <span className="status-encoding-wrap">
+              {encodingMenuOpen && (
+                <div className="status-encoding-menu">
+                  {ENCODING_OPTIONS.map((enc) => (
+                    <div
+                      key={enc}
+                      className={`status-encoding-option${activeTab.encoding === enc ? ' active' : ''}`}
+                      onClick={() => chooseEncoding(enc)}
+                    >
+                      {enc}
+                    </div>
+                  ))}
+                </div>
+              )}
+              <span
+                className="status-item status-toggle"
+                onClick={() => setEncodingMenuOpen((v) => !v)}
+                title="点击切换文件编码（影响保存与编译输出编码）"
+              >
+                {activeTab.encoding}
+              </span>
+            </span>
             <span className="status-item">CRLF</span>
           </>
         )}
