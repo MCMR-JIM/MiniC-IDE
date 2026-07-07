@@ -50,7 +50,13 @@ const EditorPane: React.FC = () => {
     if (!model) return;
     const original = model.getValue();
     if (!original.trim()) return;
-    const path = useIDEStore.getState().activeTabPath ?? 'main.cpp';
+    const store = useIDEStore.getState();
+    const path = store.activeTabPath ?? 'main.cpp';
+    const surface = (msg: string) => {
+      store.appendOutput(msg);
+      store.setOutputVisible(true);
+      document.dispatchEvent(new CustomEvent('switch-output-tab', { detail: { tab: 'output' } }));
+    };
     try {
       const formatted = await formatSource(original, path);
       if (formatted && formatted !== original) {
@@ -58,10 +64,12 @@ const EditorPane: React.FC = () => {
           { range: model.getFullModelRange(), text: formatted, forceMoveMarkers: true },
         ]);
         editor.pushUndoStop();
+      } else {
+        surface('[格式化] 代码已符合当前格式规范，无需改动。');
       }
       editor.focus();
     } catch (err) {
-      console.error('格式化失败:', err);
+      surface(`[格式化] 失败：${err instanceof Error ? err.message : String(err)}`);
     }
   }, []);
 

@@ -38,7 +38,28 @@ const clangFilenameForPath = (path: string): string => {
   }
 };
 
+/**
+ * Clean up paste artifacts that break clang-format. Code copied from a rendered
+ * web page / chat helper (e.g. 网页版微信) can carry literal HTML line-break
+ * tags, HTML entities, non-breaking spaces or zero-width characters. These make
+ * the source look normal on screen but leave it without real line breaks or with
+ * invisible junk, so clang-format ends up doing nothing (or fails to parse).
+ */
+export const sanitizeSource = (src: string): string => {
+  let s = src;
+  // Zero-width / BOM characters.
+  s = s.replace(/[\u200B\u200C\u200D\u2060\uFEFF]/g, '');
+  // Non-breaking spaces -> normal space.
+  s = s.replace(/\u00A0/g, ' ');
+  // Literal HTML line-break tags -> real newline.
+  s = s.replace(/<br\s*\/?>/gi, '\n');
+  // HTML non-breaking-space entity.
+  s = s.replace(/&nbsp;/gi, ' ');
+  return s;
+};
+
 export const formatSource = async (content: string, path: string): Promise<string> => {
   await ensureReady();
-  return format(content, clangFilenameForPath(path), LLVM_STYLE);
+  const cleaned = sanitizeSource(content);
+  return format(cleaned, clangFilenameForPath(path), LLVM_STYLE);
 };
