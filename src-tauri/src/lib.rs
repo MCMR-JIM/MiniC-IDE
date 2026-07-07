@@ -446,15 +446,16 @@ async fn compile_file(
         let _ = std::fs::remove_file(tmp);
     }
 
-    #[cfg(windows)]
-    let log_enc = windows_subprocess_pipe_encoding();
-    #[cfg(not(windows))]
-    let log_enc = detect_source_encoding(Some(file_path.as_str()));
+    // GCC/g++ emit diagnostics (including quoted source lines) as UTF-8 on all
+    // platforms. Detect per-buffer so valid UTF-8 is decoded as UTF-8 and any
+    // non-UTF-8 output falls back gracefully, avoiding garbled error messages.
+    let stdout_enc = detect_buffer_encoding(&result.stdout);
+    let stderr_enc = detect_buffer_encoding(&result.stderr);
 
     let compile_source_display = compile_source_path.to_string_lossy().to_string();
     let compile_output_display = compile_output_path.to_string_lossy().to_string();
-    let mut stdout = decode_full_buffer(&result.stdout, log_enc);
-    let mut stderr = decode_full_buffer(&result.stderr, log_enc);
+    let mut stdout = decode_full_buffer(&result.stdout, stdout_enc);
+    let mut stderr = decode_full_buffer(&result.stderr, stderr_enc);
     if compile_source_display != file_path {
         stdout = stdout.replace(&compile_source_display, &file_path);
         stderr = stderr.replace(&compile_source_display, &file_path);
@@ -513,7 +514,7 @@ fn detect_buffer_encoding(bytes: &[u8]) -> &'static Encoding {
     Encoding::for_label(enc.name().as_bytes()).unwrap_or(GBK)
 }
 
-#[cfg_attr(windows, allow(dead_code))]
+#[allow(dead_code)]
 fn detect_source_encoding(path: Option<&str>) -> &'static Encoding {
     let Some(p) = path else { return GBK; };
     let Ok(bytes) = std::fs::read(p) else { return GBK; };
