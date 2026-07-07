@@ -162,6 +162,57 @@ fn encoding_for_windows_code_page(cp: u32) -> &'static Encoding {
     }
 }
 
+/// Canonical encoding label kept in sync between backend, frontend tab state and
+/// the terminal decoder. `enc.name()` from encoding_rs is used directly.
+fn encoding_label(enc: &'static Encoding) -> String {
+    enc.name().to_string()
+}
+
+/// Resolve a (possibly aliased, case-insensitive) label to an encoding_rs codec.
+fn encoding_from_label(label: &str) -> &'static Encoding {
+    match label.to_ascii_uppercase().as_str() {
+        "UTF-8" | "UTF8" => encoding_rs::UTF_8,
+        "GBK" | "GB2312" | "CP936" => GBK,
+        "GB18030" => encoding_rs::GB18030,
+        "BIG5" | "CP950" => encoding_rs::BIG5,
+        "SHIFT_JIS" | "SHIFT-JIS" | "SJIS" | "CP932" => encoding_rs::SHIFT_JIS,
+        "EUC-KR" | "CP949" => encoding_rs::EUC_KR,
+        "WINDOWS-1252" | "CP1252" => encoding_rs::WINDOWS_1252,
+        "WINDOWS-1251" | "CP1251" => encoding_rs::WINDOWS_1251,
+        _ => encoding_rs::UTF_8,
+    }
+}
+
+/// Windows code page for a label (used for `chcp` when running programs).
+fn label_to_code_page(label: &str) -> u32 {
+    match label.to_ascii_uppercase().as_str() {
+        "UTF-8" | "UTF8" => 65001,
+        "GBK" | "GB2312" | "CP936" => 936,
+        "GB18030" => 54936,
+        "BIG5" | "CP950" => 950,
+        "SHIFT_JIS" | "SHIFT-JIS" | "SJIS" | "CP932" => 932,
+        "EUC-KR" | "CP949" => 949,
+        "WINDOWS-1252" | "CP1252" => 1252,
+        "WINDOWS-1251" | "CP1251" => 1251,
+        _ => 65001,
+    }
+}
+
+/// GCC/iconv charset name for a label (used for -finput-charset/-fexec-charset).
+fn label_to_gcc_charset(label: &str) -> &'static str {
+    match label.to_ascii_uppercase().as_str() {
+        "UTF-8" | "UTF8" => "UTF-8",
+        "GBK" | "GB2312" | "CP936" => "GBK",
+        "GB18030" => "GB18030",
+        "BIG5" | "CP950" => "BIG5",
+        "SHIFT_JIS" | "SHIFT-JIS" | "SJIS" | "CP932" => "SHIFT_JIS",
+        "EUC-KR" | "CP949" => "EUC-KR",
+        "WINDOWS-1252" | "CP1252" => "CP1252",
+        "WINDOWS-1251" | "CP1251" => "CP1251",
+        _ => "UTF-8",
+    }
+}
+
 #[cfg(windows)]
 fn windows_subprocess_pipe_encoding() -> &'static Encoding {
     use windows_sys::Win32::Globalization::GetACP;
@@ -319,8 +370,10 @@ async fn compile_file(
     app: tauri::AppHandle,
     file_path: String,
     output_path: Option<String>,
+    encoding: Option<String>,
 ) -> Result<CompileResult, String> {
     let language = detect_source_language(&file_path)?;
+    let charset = label_to_gcc_charset(encoding.as_deref().unwrap_or("UTF-8"));
     let out = output_path.unwrap_or_else(|| {
         let p = Path::new(&file_path);
         p.with_extension("exe").to_string_lossy().to_string()
@@ -353,6 +406,8 @@ async fn compile_file(
             cmd.env("PATH", p);
         }
         cmd.arg("-x").arg(language.arg());
+        cmd.arg(format!("-finput-charset={}", charset));
+        cmd.arg(format!("-fexec-charset={}", charset));
         cmd.arg("-o").arg(&compile_output_path).arg(&compile_source_path);
         #[cfg(windows)]
         {
@@ -458,6 +513,7 @@ fn detect_buffer_encoding(bytes: &[u8]) -> &'static Encoding {
     Encoding::for_label(enc.name().as_bytes()).unwrap_or(GBK)
 }
 
+#[cfg_attr(windows, allow(dead_code))]
 fn detect_source_encoding(path: Option<&str>) -> &'static Encoding {
     let Some(p) = path else { return GBK; };
     let Ok(bytes) = std::fs::read(p) else { return GBK; };
@@ -692,9 +748,6 @@ fn prepare_windows_compile_paths(
 ) -> Result<WindowsCompilePaths, String> {
     let src_path = PathBuf::from(file_path);
     let src_bytes = std::fs::read(&src_path).map_err(|e| format!("无法读取源文件: {}", e))?;
-    let src_enc = detect_source_encoding(Some(file_path));
-    let target_cp = windows_runtime_code_page();
-    let target_enc = encoding_for_windows_code_page(target_cp);
     let work_dir = windows_ascii_work_dir(app)?;
     let ext = src_path
         .extension()
@@ -704,15 +757,11 @@ fn prepare_windows_compile_paths(
     let compile_source_path = unique_windows_temp_path(&work_dir, "minic-compile-src", ext);
     let compile_output_path = unique_windows_temp_path(&work_dir, "minic-compile-out", "exe");
 
-    if src_enc.name() == target_enc.name() {
-        std::fs::write(&compile_source_path, &src_bytes)
-            .map_err(|e| format!("无法写入临时源文件: {}", e))?;
-    } else {
-        let (text, _, _) = src_enc.decode(&src_bytes);
-        let (encoded, _, _) = target_enc.encode(&text);
-        std::fs::write(&compile_source_path, encoded.as_ref())
-            .map_err(|e| format!("无法写入临时转码文件: {}", e))?;
-    }
+    // Preserve the source bytes exactly. The original encoding is passed to the
+    // compiler via -finput-charset, so string literals keep their encoding and
+    // the produced program prints correctly in a matching terminal.
+    std::fs::write(&compile_source_path, &src_bytes)
+        .map_err(|e| format!("无法写入临时源文件: {}", e))?;
 
     if let Some(parent) = Path::new(output_path).parent() {
         std::fs::create_dir_all(parent).map_err(|e| format!("无法创建输出目录: {}", e))?;
@@ -892,6 +941,7 @@ fn spawn_pty_executable(
     cols: u16,
     app: tauri::AppHandle,
     _window_label: String,
+    encoding: Option<String>,
 ) -> Result<(), String> {
     use std::io::Read;
     let pty_system = native_pty_system();
@@ -928,7 +978,10 @@ fn spawn_pty_executable(
         let script_path = unique_windows_temp_path(&work_dir, "minic-run-script", "cmd");
 
         let escaped_exe = runtime_exe_path.to_string_lossy().replace('\"', "\"\"");
-        let cp = windows_runtime_code_page();
+        let cp = encoding
+            .as_deref()
+            .map(label_to_code_page)
+            .unwrap_or_else(windows_runtime_code_page);
         let script = format!("@echo off\r\nchcp {} > nul\r\n\"{}\"\r\n", cp, escaped_exe);
         std::fs::write(&script_path, script)
             .map_err(|e| format!("无法创建运行脚本: {}", e))?;
@@ -1006,9 +1059,15 @@ fn spawn_pty_executable(
     }
 
     #[cfg(windows)]
-    let pty_cp: u32 = windows_runtime_code_page();
+    let pty_cp: u32 = encoding
+        .as_deref()
+        .map(label_to_code_page)
+        .unwrap_or_else(windows_runtime_code_page);
     #[cfg(not(windows))]
-    let pty_cp: u32 = 65001;
+    let pty_cp: u32 = {
+        let _ = &encoding;
+        65001
+    };
     let _ = app.emit(
         "terminal-output-chunk",
         TerminalChunkPayload {
@@ -1103,13 +1162,14 @@ async fn run_executable(
     source_path: Option<String>,
     rows: Option<u16>,
     cols: Option<u16>,
+    encoding: Option<String>,
 ) -> Result<(), String> {
     let rows = rows.filter(|&r| r > 0).unwrap_or(24);
     let cols = cols.filter(|&c| c > 0).unwrap_or(80);
     let app = window.app_handle().clone();
     let label = window.label().to_string();
     tauri::async_runtime::spawn_blocking(move || {
-        spawn_pty_executable(exe_path, cwd, source_path, rows, cols, app, label)
+        spawn_pty_executable(exe_path, cwd, source_path, rows, cols, app, label, encoding)
     })
     .await
     .map_err(|e| format!("{}", e))??;
@@ -1195,16 +1255,33 @@ async fn run_terminal_command(window: tauri::Window, cmd: String, cwd: String) -
     spawn_streaming_process(command, app, label)
 }
 
+#[derive(serde::Serialize)]
+pub struct FileReadResult {
+    pub content: String,
+    pub encoding: String,
+}
+
 #[tauri::command]
-async fn read_file_content(path: String) -> Result<String, String> {
+async fn read_file_content(path: String) -> Result<FileReadResult, String> {
     let bytes = std::fs::read(&path).map_err(|e| format!("无法读取文件 {}: {}", path, e))?;
+    // Empty files carry no encoding signal; use the system/terminal default so
+    // newly created programs print correctly in the native console.
+    if bytes.is_empty() {
+        return Ok(FileReadResult {
+            content: String::new(),
+            encoding: get_default_encoding(),
+        });
+    }
     let enc = detect_buffer_encoding(&bytes);
     let is_utf16 = matches!(enc.name(), "UTF-16LE" | "UTF-16BE");
     if bytes.contains(&0u8) && !is_utf16 {
         return Err(format!("[二进制文件] 此文件为二进制格式，无法以文本方式显示: {}", path));
     }
     let (cow, _, _) = enc.decode(&bytes);
-    Ok(cow.into_owned())
+    Ok(FileReadResult {
+        content: cow.into_owned(),
+        encoding: encoding_label(enc),
+    })
 }
 
 #[tauri::command]
@@ -1222,11 +1299,18 @@ async fn inspect_paths(paths: Vec<String>) -> Result<Vec<InspectedPath>, String>
 }
 
 #[tauri::command]
-async fn write_file_content(path: String, content: String) -> Result<(), String> {
+async fn write_file_content(path: String, content: String, encoding: Option<String>) -> Result<(), String> {
     if let Some(parent) = Path::new(&path).parent() {
         std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }
-    std::fs::write(&path, content).map_err(|e| format!("Cannot write {}: {}", path, e))
+    let label = encoding.unwrap_or_else(|| "UTF-8".to_string());
+    let enc = encoding_from_label(&label);
+    if std::ptr::eq(enc, encoding_rs::UTF_8) {
+        std::fs::write(&path, content).map_err(|e| format!("Cannot write {}: {}", path, e))
+    } else {
+        let (bytes, _, _) = enc.encode(&content);
+        std::fs::write(&path, bytes.as_ref()).map_err(|e| format!("Cannot write {}: {}", path, e))
+    }
 }
 
 #[tauri::command]
@@ -1438,6 +1522,21 @@ async fn get_file_info(path: String) -> Result<serde_json::Value, String> {
     }))
 }
 
+/// Default text encoding for new files, derived from the system/terminal code
+/// page (e.g. GBK on zh-CN Windows), so freshly created programs print correctly
+/// in the native console.
+#[tauri::command]
+fn get_default_encoding() -> String {
+    #[cfg(windows)]
+    {
+        encoding_label(encoding_for_windows_code_page(windows_runtime_code_page()))
+    }
+    #[cfg(not(windows))]
+    {
+        "UTF-8".to_string()
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -1468,6 +1567,7 @@ pub fn run() {
             inspect_paths,
             save_file_dialog,
             get_file_info,
+            get_default_encoding,
             get_file_identity,
             resolve_file_path_by_identity,
             run_terminal_command,
